@@ -226,6 +226,11 @@ def main():
         default=15,
         help='每个任务的最大轮次 (默认: 15)'
     )
+    parser.add_argument(
+        '--force',
+        action='store_true',
+        help='强制重新运行所有任务（忽略已有测试结果）'
+    )
     args = parser.parse_args()
 
     print("=" * 60)
@@ -250,9 +255,13 @@ def main():
 
     print(f"任务总数: {len(all_tasks)}")
 
-    # 2. 加载之前的测试结果
-    previous_results = load_previous_results()
-    print(f"已测试任务数: {len(previous_results)}")
+    # 2. 加载之前的测试结果（除非使用 --force）
+    if args.force:
+        print(f"\n⚠️  强制模式: 将重新运行所有任务（忽略已有结果）")
+        previous_results = {}
+    else:
+        previous_results = load_previous_results()
+        print(f"已测试任务数: {len(previous_results)}")
 
     # 3. 获取需要测试的任务
     tasks_to_test = get_tasks_to_test(all_tasks, previous_results)

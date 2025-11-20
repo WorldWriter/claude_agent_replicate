@@ -90,6 +90,7 @@ Options:
                                 - baseline: 59个基准任务 (~1.5-2小时)
                                 - all: 所有有gold的任务 (~8-10小时)
   --max-turns MAX_TURNS        每个任务的最大轮次 (默认: 15)
+  --force                      强制重新运行所有任务（忽略已有测试结果）
   -h, --help                   显示帮助信息
 ```
 
@@ -103,14 +104,20 @@ python test/test_dacode.py --mode quick
 python test/test_dacode.py
 python test/test_dacode.py --mode baseline
 
-# 3. 增加最大轮次到 20
+# 3. 强制重新运行（忽略已有结果）
+python test/test_dacode.py --mode quick --force
+
+# 4. 增加最大轮次到 20
 python test/test_dacode.py --mode quick --max-turns 20
 
-# 4. 测试所有任务（需要完整数据集）
+# 5. 测试所有任务（需要完整数据集）
 python test/test_dacode.py --mode all
 
-# 5. All 模式 + 最大轮次 25
+# 6. All 模式 + 最大轮次 25
 python test/test_dacode.py --mode all --max-turns 25
+
+# 7. 强制重跑 baseline 全部任务
+python test/test_dacode.py --mode baseline --force
 ```
 
 ### 模式对比
@@ -123,7 +130,7 @@ python test/test_dacode.py --mode all --max-turns 25
 
 ## 增量测试
 
-测试脚本会自动：
+测试脚本默认支持**增量测试**，会自动：
 1. 扫描已有的测试结果（`logs/dacode_test_*.json`）
 2. 跳过已测试的任务
 3. 只测试剩余任务
@@ -137,6 +144,24 @@ python test/test_dacode.py --mode baseline
 # 第二次运行：自动跳过已测试的 30 个，测试剩余 29 个
 python test/test_dacode.py --mode baseline
 ```
+
+### 强制重新运行
+
+如果需要**强制重新运行**所有任务（忽略已有结果），使用 `--force` 参数：
+
+```bash
+# 强制重跑 Quick 测试（5个任务）
+python test/test_dacode.py --mode quick --force
+
+# 强制重跑 Baseline 测试（59个任务）
+python test/test_dacode.py --mode baseline --force
+```
+
+**适用场景**:
+- ✅ Agent 代码有重大修改，需要重新测试所有任务
+- ✅ 修改了 prompt 或工具定义，需要验证对所有任务的影响
+- ✅ 之前的测试结果不可靠，需要重新建立 baseline
+- ✅ 对比不同配置下的性能（如不同的 max_turns）
 
 ## 评估结果
 
