@@ -1,0 +1,1 @@
+{"type": "bar", "color": ["#0000ff"], "figsize": [10.0, 6.0], "graph_title": "Number of Movies by Duration",  "x_label": "Duration", "y_label": "Number of Movies", "xtick_labels": ["0-60 min", "61-90 min", "91-120 min", "121-150 min", "151-180 min", "181-210 min", "211-240 min", "240+ min"], "ytick_labels": ["0", "500", "1000", "1500", "2000", "2500", "3000", "3500"]}

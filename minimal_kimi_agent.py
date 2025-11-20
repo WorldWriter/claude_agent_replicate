@@ -37,7 +37,7 @@ class MinimalKimiAgent:
         self.workspace = "agent_workspace"
         os.makedirs(self.workspace, exist_ok=True)
 
-    def run(self, user_input: str, max_turns: int = 10) -> str:
+    def run(self, user_input: str, max_turns: int = 20) -> str:
         """
         主运行循环
 
@@ -150,7 +150,7 @@ class MinimalKimiAgent:
                 "type": "function",
                 "function": {
                     "name": "ReadFile",
-                    "description": "读取文件内容",
+                    "description": "读取文件内容。注意：最多返回前1000个字符，如果文件过大会被截断。对于大文件建议使用Python脚本分批处理",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -224,10 +224,19 @@ class MinimalKimiAgent:
     def _tool_read_file(self, path: str) -> str:
         """读取文件"""
         path = self._resolve_path(path)
+        max_chars = 1000  # 最大字符数限制，约2-3k tokens
+
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 content = f.read()
-            return f"成功读取文件 {path} ({len(content)} 字符)\n\n{content}"
+
+            # 检查是否超出限制
+            original_len = len(content)
+            if original_len > max_chars:
+                content = content[:max_chars]
+                return f"⚠️  文件过大，已截断到前 {max_chars} 个字符（总共 {original_len} 字符）\n建议使用 Python 脚本分批处理大文件\n\n{content}"
+
+            return f"成功读取文件 {path} ({original_len} 字符)\n\n{content}"
         except Exception as e:
             return f"读取失败: {e}"
 
@@ -380,7 +389,7 @@ def example_simple():
     print("="*60)
 
     agent = MinimalKimiAgent()
-    result = agent.run("创建一个 test.txt 文件，内容是 'Hello Kimi Agent!'")
+    result = agent.run("验证下 data/full_gcp_data.csv, 文件太大, 写个python脚本读下前100行. 统计下三列的数量是否一致, 即 Usage Quantity * Cost per Quantity ($) = Unrounded Cost ($), 可以统计下diff ,因为可能有小数点差异")
     print(f"\n最终结果: {result}")
 
 
@@ -395,9 +404,8 @@ def example_multi_step():
     请完成以下任务:
     1. 找下当前的工作目录下有什么? 找到data/full_gcp_data.csv
     2. 写个python 脚本,并运行(当前已经有相关脚本, 可直接运行). 该脚本的功能是读取data/full_gcp_data.csv 文件, 并打印出文件的行数和列数.
-    3. 以及该文件的列头是什么, 每列的基本的情况是什么? 
-    4. 然后根据上面的结果, 统计下 2022年1月和2月的各个指标值的增长情况;
-    5. 根据以上的指标的增长, 给出一个可行决策的建议, 用以节省成本
+    3. 对比2022年1月和2022年2月的各指标用量趋势, 并绘制下趋势图.
+    4. 对比每天的的波动情况, 识别异常信号(如异常高或低的天).
     """)
     print(f"\n最终结果: {result}")
 
@@ -411,4 +419,5 @@ if __name__ == "__main__":
         exit(1)
 
     # 运行示例
+    # example_simple()
     example_multi_step()
