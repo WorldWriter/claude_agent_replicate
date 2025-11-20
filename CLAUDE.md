@@ -63,14 +63,27 @@ result = agent.run("Your task description", max_turns=20)
 
 ## Data Context
 
-**Dataset**: `agent_workspace/data/full_gcp_data.csv`
-- 124,275 rows, 15 columns of GCP Cloud Billing data
-- Spans 2022-2023, includes Resource ID, Service Name, Usage Quantity, Costs, CPU/Memory utilization
+### DA-Code Benchmark Dataset
 
-**Analysis Scripts** in `agent_workspace/`:
-- `validate_cost_calculation.py` - Verifies: Usage Quantity × Cost per Quantity = Unrounded Cost
-- `analyze_top_resource_usage.py` - Top N resource usage trends
-- `count_resource_ids.py` - Unique resource statistics
+**Location**: `agent_workspace/da-code/da_code/`
+
+**Current Status**:
+- ✅ Git clone includes: 100 sample tasks + 59 Gold answers
+- ⚠️ Full dataset requires download: 500+ tasks, 2.1GB source data
+
+**Download Full Dataset**:
+```bash
+pip install gdown
+gdown "https://drive.google.com/uc?id=1eM_FVT1tlY4XXp6b7TrKzgTWOvskrjTs" -O source.zip
+unzip source.zip -d agent_workspace/da-code/da_code/
+```
+
+**Structure**:
+- `source/` - Task data files (2.1GB when full, currently 100 samples)
+- `gold/` - Standard answers (59 tasks included in git)
+- `configs/` - Task metadata and evaluation configs
+
+**Baseline Test**: 59 tasks, 23.7% accuracy (see `docs/baseline_report.md`)
 
 Common pattern: pandas for data manipulation, matplotlib/seaborn for visualization
 

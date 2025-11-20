@@ -2,6 +2,10 @@
 DA-Code Benchmark 测试脚本
 使用 MinimalKimiAgent 测试 DA-Code 数据集
 支持增量测试：自动发现所有任务，跳过已测试任务
+
+测试模式:
+- baseline: 测试 baseline 59 个任务（git clone 时包含的 gold 任务）
+- all: 测试所有有 gold 答案的任务（需要先下载完整数据集）
 """
 
 import os
@@ -9,6 +13,7 @@ import sys
 import json
 import shutil
 import glob
+import argparse
 from datetime import datetime
 
 # 添加父目录到路径以导入 minimal_kimi_agent
@@ -23,6 +28,18 @@ GOLD_DIR = os.path.join(DA_CODE_DIR, "gold")
 CONFIG_FILE = os.path.join(DA_CODE_DIR, "configs/task/all.jsonl")
 WORKSPACE = os.path.join(PROJECT_ROOT, "agent_workspace")
 LOGS_DIR = os.path.join(PROJECT_ROOT, "logs")
+BASELINE_TASKS_FILE = os.path.join(os.path.dirname(__file__), "baseline_tasks.json")
+
+
+def load_baseline_tasks() -> list:
+    """加载 baseline 59 个任务列表"""
+    if not os.path.exists(BASELINE_TASKS_FILE):
+        print(f"警告: Baseline 任务配置文件不存在: {BASELINE_TASKS_FILE}")
+        return []
+
+    with open(BASELINE_TASKS_FILE, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+        return config.get("baseline_59_tasks", [])
 
 
 def discover_all_tasks() -> list:
@@ -185,13 +202,38 @@ def run_test(task_id: str, max_turns: int = 15) -> dict:
 
 def main():
     """主函数 - 增量测试模式"""
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description='DA-Code Benchmark 测试脚本')
+    parser.add_argument(
+        '--mode',
+        type=str,
+        default='baseline',
+        choices=['baseline', 'all'],
+        help='测试模式: baseline (59个基准任务) 或 all (所有有gold的任务)'
+    )
+    parser.add_argument(
+        '--max-turns',
+        type=int,
+        default=15,
+        help='每个任务的最大轮次 (默认: 15)'
+    )
+    args = parser.parse_args()
+
     print("=" * 60)
-    print("DA-Code Benchmark 测试 - 增量模式")
+    print(f"DA-Code Benchmark 测试 - {args.mode.upper()} 模式")
     print("=" * 60)
 
-    # 1. 发现所有任务
-    all_tasks = discover_all_tasks()
-    print(f"\n发现任务总数: {len(all_tasks)}")
+    # 1. 根据模式选择任务列表
+    if args.mode == 'baseline':
+        all_tasks = load_baseline_tasks()
+        print(f"\n模式: Baseline 测试")
+        print(f"任务来源: {BASELINE_TASKS_FILE}")
+    else:
+        all_tasks = discover_all_tasks()
+        print(f"\n模式: 全量测试")
+        print(f"任务来源: {GOLD_DIR}")
+
+    print(f"发现任务总数: {len(all_tasks)}")
 
     # 2. 加载之前的测试结果
     previous_results = load_previous_results()
@@ -220,7 +262,7 @@ def main():
     for i, task_id in enumerate(tasks_to_test, 1):
         print(f"\n[{i}/{len(tasks_to_test)}] 开始测试 {task_id}")
 
-        result = run_test(task_id)
+        result = run_test(task_id, max_turns=args.max_turns)
         new_results.append(result)
 
         print(f"状态: {result['status']}")
