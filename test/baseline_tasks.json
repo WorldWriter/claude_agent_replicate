@@ -1,4 +1,14 @@
 {
+  "quick_test_5_tasks": [
+    "di-text-001",
+    "dm-csv-050",
+    "ml-regression-011",
+    "data-sa-001",
+    "plot-bar-005"
+  ],
+  "quick_test_description": "快速测试配置 - 每类任务各选1个（共5个）",
+  "quick_test_note": "选择标准：(1) 覆盖5种主要任务类型 (2) 优先选择baseline测试中已成功的任务 (3) 适合快速验证Agent改进效果",
+  "quick_test_expected_accuracy": "100% (5/5) - 这5个任务在baseline测试中全部成功",
   "baseline_59_tasks": [
     "data-sa-001",
     "data-sa-004",
@@ -60,8 +70,8 @@
     "plot-pie-008",
     "plot-scatter-002"
   ],
-  "description": "Baseline 59 tasks with Gold answers (from initial DA-Code git clone)",
-  "date": "2025-11-20",
+  "baseline_description": "Baseline 59 tasks with Gold answers (from initial DA-Code git clone)",
+  "baseline_date": "2025-11-20",
   "baseline_accuracy": "23.7% (14/59)",
-  "note": "这是基于 git clone 的 DA-Code 仓库中包含的 Gold 答案任务。完整数据集有 500+ 任务，需要额外下载 source data。"
+  "baseline_note": "这是基于 git clone 的 DA-Code 仓库中包含的 Gold 答案任务。完整数据集有 500+ 任务，需要额外下载 source data。"
 }

@@ -8,7 +8,33 @@
 
 ## 测试模式
 
-### 1. Baseline 模式（默认）
+### 1. Quick 模式 ⚡
+
+测试 **5 个**快速验证任务（每类任务各1个）
+
+```bash
+python test/test_dacode.py --mode quick
+```
+
+**任务列表**:
+- `di-text-001` - Data Insight
+- `dm-csv-050` - Data Manipulation
+- `ml-regression-011` - Machine Learning
+- `data-sa-001` - Statistical Analysis
+- `plot-bar-005` - Data Visualization
+
+**特点**:
+- ✅ **预期准确率**: 100% (5/5) - 这5个任务在baseline测试中全部成功
+- ⚡ **执行时间**: ~5-10 分钟
+- 🎯 **用途**: 快速验证 Agent 改进是否有明显退化
+
+**适用场景**:
+- 开发调试时的快速反馈
+- 验证 Agent 修改后是否仍能完成基础任务
+- CI/CD 自动化测试的 smoke test
+- 演示 Agent 基本能力
+
+### 2. Baseline 模式（默认）
 
 测试 **59 个** baseline 任务（git clone 时包含的 gold 任务）
 
@@ -18,12 +44,18 @@ python test/test_dacode.py
 python test/test_dacode.py --mode baseline
 ```
 
+**特点**:
+- 📊 **Baseline 准确率**: 23.7% (14/59)
+- ⏱️ **执行时间**: ~1.5-2 小时
+- 📁 **无需额外下载**: 使用 git clone 自带的数据
+
 **适用场景**:
 - 建立基准性能
-- 快速验证 Agent 改进
+- 完整验证 Agent 改进效果
+- 准备技术报告的标准测试集
 - 不需要下载完整数据集（2.1GB）
 
-### 2. All 模式
+### 3. All 模式
 
 测试**所有**有 gold 答案的任务（需要先下载完整数据集）
 
@@ -53,26 +85,41 @@ python test/test_dacode.py --mode all
 python test/test_dacode.py [OPTIONS]
 
 Options:
-  --mode {baseline,all}  测试模式 (默认: baseline)
-  --max-turns MAX_TURNS  每个任务的最大轮次 (默认: 15)
-  -h, --help            显示帮助信息
+  --mode {quick,baseline,all}  测试模式 (默认: baseline)
+                                - quick: 5个快速验证任务 (~5-10分钟)
+                                - baseline: 59个基准任务 (~1.5-2小时)
+                                - all: 所有有gold的任务 (~8-10小时)
+  --max-turns MAX_TURNS        每个任务的最大轮次 (默认: 15)
+  -h, --help                   显示帮助信息
 ```
 
 ### 示例
 
 ```bash
-# 1. 默认 baseline 测试
+# 1. 快速测试（5个任务，推荐用于开发调试）
+python test/test_dacode.py --mode quick
+
+# 2. 默认 baseline 测试（59个任务）
 python test/test_dacode.py
+python test/test_dacode.py --mode baseline
 
-# 2. 增加最大轮次到 20
-python test/test_dacode.py --max-turns 20
+# 3. 增加最大轮次到 20
+python test/test_dacode.py --mode quick --max-turns 20
 
-# 3. 测试所有任务（需要完整数据集）
+# 4. 测试所有任务（需要完整数据集）
 python test/test_dacode.py --mode all
 
-# 4. All 模式 + 最大轮次 25
+# 5. All 模式 + 最大轮次 25
 python test/test_dacode.py --mode all --max-turns 25
 ```
+
+### 模式对比
+
+| 模式 | 任务数 | 预期准确率 | 执行时间 | 适用场景 |
+|------|--------|-----------|----------|----------|
+| **quick** | 5 | 100% | ~5-10分钟 | 快速验证、调试开发 |
+| **baseline** | 59 | 23.7% | ~1.5-2小时 | 性能基准、完整验证 |
+| **all** | 500+ | 待测 | ~8-10小时 | 全面评估、论文数据 |
 
 ## 增量测试
 

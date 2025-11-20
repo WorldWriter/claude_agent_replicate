@@ -31,15 +31,24 @@ LOGS_DIR = os.path.join(PROJECT_ROOT, "logs")
 BASELINE_TASKS_FILE = os.path.join(os.path.dirname(__file__), "baseline_tasks.json")
 
 
-def load_baseline_tasks() -> list:
-    """加载 baseline 59 个任务列表"""
+def load_baseline_tasks(mode: str = 'baseline') -> list:
+    """
+    加载任务列表
+
+    Args:
+        mode: 'baseline' (59个任务) 或 'quick' (5个任务)
+    """
     if not os.path.exists(BASELINE_TASKS_FILE):
         print(f"警告: Baseline 任务配置文件不存在: {BASELINE_TASKS_FILE}")
         return []
 
     with open(BASELINE_TASKS_FILE, 'r', encoding='utf-8') as f:
         config = json.load(f)
-        return config.get("baseline_59_tasks", [])
+
+        if mode == 'quick':
+            return config.get("quick_test_5_tasks", [])
+        else:  # baseline
+            return config.get("baseline_59_tasks", [])
 
 
 def discover_all_tasks() -> list:
@@ -208,8 +217,8 @@ def main():
         '--mode',
         type=str,
         default='baseline',
-        choices=['baseline', 'all'],
-        help='测试模式: baseline (59个基准任务) 或 all (所有有gold的任务)'
+        choices=['quick', 'baseline', 'all'],
+        help='测试模式: quick (5个快速验证任务) | baseline (59个基准任务) | all (所有有gold的任务)'
     )
     parser.add_argument(
         '--max-turns',
@@ -224,16 +233,22 @@ def main():
     print("=" * 60)
 
     # 1. 根据模式选择任务列表
-    if args.mode == 'baseline':
-        all_tasks = load_baseline_tasks()
+    if args.mode == 'quick':
+        all_tasks = load_baseline_tasks(mode='quick')
+        print(f"\n模式: 快速测试（每类任务各1个）")
+        print(f"任务来源: {BASELINE_TASKS_FILE}")
+        print(f"预期准确率: 100% (5/5) - 这5个任务在baseline测试中全部成功")
+    elif args.mode == 'baseline':
+        all_tasks = load_baseline_tasks(mode='baseline')
         print(f"\n模式: Baseline 测试")
         print(f"任务来源: {BASELINE_TASKS_FILE}")
-    else:
+        print(f"Baseline 准确率: 23.7% (14/59)")
+    else:  # all
         all_tasks = discover_all_tasks()
         print(f"\n模式: 全量测试")
         print(f"任务来源: {GOLD_DIR}")
 
-    print(f"发现任务总数: {len(all_tasks)}")
+    print(f"任务总数: {len(all_tasks)}")
 
     # 2. 加载之前的测试结果
     previous_results = load_previous_results()
