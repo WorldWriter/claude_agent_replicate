@@ -1,0 +1,344 @@
+{
+  "project": "DA-Code Agent Architecture Research",
+  "dataset_version": "v1.0",
+  "split_date": "2025-11-22",
+  "total_tasks_available": 500,
+  "total_tasks_allocated": 159,
+  "total_tasks_reserved": 341,
+
+  "sampling_config": {
+    "random_seed": 42,
+    "strategy": "双重分层随机抽样 (任务类别 × 难度)",
+    "target_difficulty_distribution": {
+      "Easy": 0.33,
+      "Medium": 0.33,
+      "Hard": 0.34
+    }
+  },
+
+  "datasets": {
+    "quick": {
+      "description": "快速测试配置 - 每类任务各选1个（共5个）",
+      "note": "选择标准：(1) 覆盖5种主要任务类型 (2) 优先选择baseline测试中已成功的任务 (3) 适合快速验证Agent改进效果",
+      "expected_accuracy": "100% (5/5) - 这5个任务在baseline测试中全部成功",
+      "size": 5,
+      "task_ids": [
+        "di-text-001",
+        "dm-csv-050",
+        "ml-regression-011",
+        "data-sa-001",
+        "plot-bar-005"
+      ]
+    },
+
+    "train": {
+      "description": "训练集 - 用于提示工程优化、策略开发",
+      "size": 50,
+      "difficulty_distribution": {
+        "Easy": 16,
+        "Medium": 16,
+        "Hard": 18
+      },
+      "config_file": "agent_workspace/da-code/da_code/configs/eval/eval_train.jsonl",
+      "task_ids": [
+        "di-text-030",
+        "dm-csv-018",
+        "dm-csv-002",
+        "plot-scatter-009",
+        "plot-line-012",
+        "data-wrangling-030",
+        "data-wrangling-101",
+        "data-wrangling-015",
+        "ml-multi-007",
+        "ml-binary-007",
+        "ml-multi-002",
+        "ml-regression-021",
+        "data-sa-054",
+        "dm-csv-008",
+        "data-sa-021",
+        "ml-cluster-008",
+        "di-csv-004",
+        "di-csv-003",
+        "di-csv-007",
+        "dm-csv-017",
+        "plot-line-002",
+        "plot-pie-010",
+        "data-wrangling-006",
+        "data-wrangling-050",
+        "data-wrangling-089",
+        "ml-binary-024",
+        "data-sa-049",
+        "data-sa-059",
+        "data-wrangling-095",
+        "di-csv-008",
+        "dm-csv-063",
+        "data-sa-066",
+        "di-csv-014",
+        "dm-csv-029",
+        "dm-csv-026",
+        "dm-csv-027",
+        "dm-csv-030",
+        "plot-bar-011",
+        "plot-scatter-004",
+        "data-wrangling-082",
+        "data-wrangling-016",
+        "data-wrangling-031",
+        "data-wrangling-084",
+        "ml-regression-006",
+        "ml-binary-017",
+        "ml-competition-002",
+        "data-sa-069",
+        "ml-cluster-006",
+        "ml-competition-020",
+        "dm-csv-033"
+      ],
+      "statistics": {
+        "data insight": {
+          "Easy": 1,
+          "Medium": 4,
+          "Hard": 1
+        },
+        "data manipulation": {
+          "Easy": 3,
+          "Medium": 2,
+          "Hard": 5
+        },
+        "data visualization": {
+          "Easy": 2,
+          "Medium": 2,
+          "Hard": 2
+        },
+        "data wrangling": {
+          "Easy": 3,
+          "Medium": 4,
+          "Hard": 4
+        },
+        "machine learning": {
+          "Easy": 5,
+          "Medium": 1,
+          "Hard": 3
+        },
+        "statistical analysis": {
+          "Easy": 2,
+          "Medium": 3,
+          "Hard": 1
+        },
+        "machine learning competition": {
+          "Hard": 2
+        }
+      }
+    },
+
+    "val": {
+      "description": "验证集 - 用于超参数调优、策略验证",
+      "size": 50,
+      "difficulty_distribution": {
+        "Easy": 16,
+        "Medium": 16,
+        "Hard": 18
+      },
+      "config_file": "agent_workspace/da-code/da_code/configs/eval/eval_val.jsonl",
+      "task_ids": [
+        "di-csv-028",
+        "dm-csv-019",
+        "dm-csv-064",
+        "plot-pie-001",
+        "plot-scatter-007",
+        "data-wrangling-057",
+        "data-wrangling-035",
+        "data-wrangling-099",
+        "ml-binary-006",
+        "ml-binary-004",
+        "ml-regression-009",
+        "ml-binary-021",
+        "data-sa-020",
+        "dm-csv-022",
+        "data-wrangling-052",
+        "dm-csv-028",
+        "di-text-008",
+        "di-csv-033",
+        "di-text-014",
+        "dm-csv-057",
+        "plot-line-016",
+        "plot-bar-019",
+        "data-wrangling-047",
+        "data-wrangling-046",
+        "data-wrangling-025",
+        "ml-regression-019",
+        "data-sa-033",
+        "data-sa-070",
+        "di-csv-035",
+        "ml-regression-007",
+        "ml-competition-011",
+        "di-text-033",
+        "di-csv-013",
+        "dm-csv-031",
+        "dm-csv-039",
+        "dm-csv-038",
+        "dm-csv-059",
+        "plot-pie-011",
+        "plot-line-018",
+        "data-wrangling-085",
+        "data-wrangling-039",
+        "data-wrangling-007",
+        "data-wrangling-026",
+        "data-wrangling-049",
+        "ml-regression-010",
+        "data-sa-037",
+        "data-sa-022",
+        "di-text-039",
+        "dm-csv-036",
+        "ml-regression-023"
+      ],
+      "statistics": {
+        "data insight": {
+          "Easy": 1,
+          "Medium": 5,
+          "Hard": 2
+        },
+        "data manipulation": {
+          "Easy": 4,
+          "Medium": 1,
+          "Hard": 5
+        },
+        "data visualization": {
+          "Easy": 2,
+          "Medium": 2,
+          "Hard": 2
+        },
+        "data wrangling": {
+          "Easy": 4,
+          "Medium": 3,
+          "Hard": 5
+        },
+        "machine learning": {
+          "Easy": 4,
+          "Medium": 2,
+          "Hard": 2
+        },
+        "statistical analysis": {
+          "Easy": 1,
+          "Medium": 2,
+          "Hard": 2
+        },
+        "machine learning competition": {
+          "Medium": 1
+        }
+      }
+    },
+
+    "test": {
+      "description": "测试集 (Baseline) - 用于最终benchmark评估",
+      "size": 59,
+      "difficulty_distribution": {
+        "Easy": 1,
+        "Medium": 14,
+        "Hard": 44
+      },
+      "config_file": "agent_workspace/da-code/da_code/configs/eval/eval_baseline.jsonl",
+      "baseline_date": "2025-11-20",
+      "baseline_accuracy": "29.7% average score",
+      "baseline_success_rate": "20.3% (12/59 tasks with score ≥ 0.9)",
+      "baseline_note": "Hard任务占比74.6%，反映真实业务场景复杂性。Data Insight 100%成功，Visualization 0%成功。",
+      "task_ids": [
+        "data-sa-001",
+        "data-sa-004",
+        "data-sa-026",
+        "data-sa-028",
+        "data-sa-029",
+        "data-sa-031",
+        "data-sa-039",
+        "data-sa-043",
+        "data-sa-061",
+        "di-text-001",
+        "di-text-002",
+        "di-text-003",
+        "di-text-004",
+        "dm-csv-001",
+        "dm-csv-007",
+        "dm-csv-009",
+        "dm-csv-010",
+        "dm-csv-011",
+        "dm-csv-015",
+        "dm-csv-043",
+        "dm-csv-044",
+        "dm-csv-050",
+        "dm-csv-052",
+        "ml-binary-009",
+        "ml-binary-013",
+        "ml-binary-016",
+        "ml-cluster-009",
+        "ml-cluster-010",
+        "ml-cluster-013",
+        "ml-cluster-014",
+        "ml-cluster-016",
+        "ml-cluster-019",
+        "ml-competition-001",
+        "ml-competition-003",
+        "ml-competition-005",
+        "ml-competition-006",
+        "ml-competition-008",
+        "ml-competition-009",
+        "ml-competition-017",
+        "ml-multi-003",
+        "ml-multi-008",
+        "ml-multi-011",
+        "ml-regression-002",
+        "ml-regression-004",
+        "ml-regression-008",
+        "ml-regression-011",
+        "ml-regression-012",
+        "ml-regression-014",
+        "ml-regression-015",
+        "plot-bar-004",
+        "plot-bar-005",
+        "plot-bar-006",
+        "plot-bar-007",
+        "plot-bar-015",
+        "plot-line-006",
+        "plot-line-015",
+        "plot-pie-005",
+        "plot-pie-008",
+        "plot-scatter-002"
+      ],
+      "baseline_performance_by_category": {
+        "Data Insight": "100.0% (4/4)",
+        "Statistical Analysis": "44.4% (4/9)",
+        "Machine Learning": "15.8% (3/19)",
+        "Data Manipulation": "10.0% (1/10)",
+        "Data Visualization": "0.0% (0/10)",
+        "ML Competition": "0.0% (0/7)"
+      },
+      "baseline_performance_by_difficulty": {
+        "Easy": "100.0% (1/1)",
+        "Medium": "57.1% (8/14)",
+        "Hard": "6.8% (3/44)"
+      }
+    }
+  },
+
+  "verification": {
+    "train_val_overlap": 0,
+    "train_test_overlap": 0,
+    "val_test_overlap": 0,
+    "note": "所有数据集完全独立，无任务交集"
+  },
+
+  "usage": {
+    "quick_test": "python test/evaluate_dacode_official.py --mode quick",
+    "train_eval": "python test/evaluate_dacode_official.py --dataset train",
+    "val_eval": "python test/evaluate_dacode_official.py --dataset val",
+    "test_eval": "python test/evaluate_dacode_official.py --dataset test",
+    "regenerate": "python test/create_train_val_split.py"
+  },
+
+  "files": {
+    "this_file": "test/dataset_tasks.json",
+    "split_script": "test/create_train_val_split.py",
+    "eval_script": "test/evaluate_dacode_official.py",
+    "detailed_report": "docs/dataset_split_report.md",
+    "train_config": "agent_workspace/da-code/da_code/configs/eval/eval_train.jsonl",
+    "val_config": "agent_workspace/da-code/da_code/configs/eval/eval_val.jsonl",
+    "test_config": "agent_workspace/da-code/da_code/configs/eval/eval_baseline.jsonl"
+  }
+}
