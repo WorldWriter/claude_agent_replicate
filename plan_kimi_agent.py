@@ -17,8 +17,14 @@ from dotenv import load_dotenv
 class PlanKimiAgent:
     """Plan Agent - 具有动态计划调整能力"""
 
-    def __init__(self, api_key: str = None):
-        """初始化 Agent"""
+    def __init__(self, api_key: str = None, mode: str = "strategic"):
+        """
+        初始化 Agent
+
+        Args:
+            api_key: Kimi API密钥
+            mode: Agent模式 - "strategic"（战略层）或 "tactical"（战术层）
+        """
         load_dotenv()
 
         # 初始化 Kimi API 客户端
@@ -26,6 +32,9 @@ class PlanKimiAgent:
             api_key=api_key or os.getenv("MOONSHOT_API_KEY"),
             base_url="https://api.moonshot.ai/v1"
         )
+
+        # Agent 模式
+        self.mode = mode
 
         # 消息历史
         self.messages: List[Dict] = []
@@ -40,38 +49,257 @@ class PlanKimiAgent:
         # 计划文件路径
         self.plan_file = os.path.join(self.workspace, "plan.md")
 
+        # 工作空间缓存（用于动态上下文）
+        self._workspace_cache = None
+
+        # API密钥（用于创建SubAgent）
+        self.api_key = api_key or os.getenv("MOONSHOT_API_KEY")
+
     def _get_system_prompt(self) -> str:
-        """获取系统提示词 - 指导 Agent 如何使用计划能力"""
-        return """你是一个具有计划能力的智能助手。你的工作方式是：
+        """获取系统提示词（根据 mode 返回不同提示）"""
+        if self.mode == "tactical":
+            return self._get_tactical_prompt()
+        else:
+            return self._get_strategic_prompt()
 
-## 工作流程
-1. **理解任务**: 分析用户需求，理解最终目标
-2. **创建计划**: 使用 CreatePlan 工具创建初始计划
-3. **执行步骤**: 逐步执行计划中的任务
-4. **动态调整**: 根据执行结果调整计划（添加、修改、跳过步骤）
-5. **完成总结**: 所有步骤完成后给出总结
+    def _get_strategic_prompt(self) -> str:
+        """战略层 System Prompt（引导高层决策）"""
+        return """你是一个具有战略规划能力的智能助手（Strategic Agent）。
 
-## 计划调整原则
-- 如果某步骤执行结果与预期不符，及时调整后续计划
-- 如果发现需要额外步骤，使用 UpdatePlan 添加
-- 如果某步骤不再需要，标记为跳过并说明原因
-- 每次调整都要在执行日志中记录原因
+## 战略思维模式
 
-## 工具使用
-- CreatePlan: 任务开始时创建计划
-- UpdatePlan: 更新步骤状态或调整计划
-- ReadPlan: 查看当前计划状态
-- ReadFile/WriteFile/RunCommand: 执行具体任务
+### 初始化阶段（首次接收任务）
+1. 调用 ExploreWorkspace 了解工作空间资源
+2. 分析任务复杂度：
+   - 简单任务（1-2步）：直接使用 ReadFile/WriteFile/RunCommand 执行
+   - 中等任务（3-7步）：使用 CreatePlan 创建高层计划
+   - 复杂任务（8+步）：分阶段规划，逐步推进
 
-## 注意事项
-- 计划要具体、可执行，每个步骤都应该明确
-- 步骤之间要有逻辑顺序
-- 遇到错误时要分析原因并调整计划
-- 保持计划文件的更新，让用户能看到进度"""
+### 执行决策（何时委派给战术层）
+对于每个步骤，判断：
+- **直接执行**：简单文件操作（读取配置、写入结果文件）
+- **委派战术层**：使用 DelegateToTactical 处理复杂执行
+  - 数据处理（pandas/numpy 操作）
+  - 统计计算和分析
+  - 可视化生成
+  - 模型训练
+  - 目标：3-7 步完成的中等粒度任务
+
+### 用户交互（何时请求确认）
+遇到以下情况必须调用 GetUserConfirmation：
+- 数据处理策略不明确（如何处理缺失值？删除还是填充？）
+- 有多种技术方案选择（使用哪个模型/库？）
+- 需要删除数据或做破坏性操作
+- 任务需求存在歧义
+
+### 结果整合
+战术任务完成后：
+1. 使用 UpdatePlan 记录结果摘要（仅高层结果，不要执行细节）
+2. 分析是否有问题需要调整策略
+3. 决定下一步行动
+
+### 上下文管理原则
+- 只保存：用户需求、计划、执行结果摘要、当前问题
+- 不保存：战术层执行细节、中间工具调用、完整日志
+- 每轮通过 <workspace_context> 和 <current_plan> 获取最新状态
+
+## 可用工具
+- **ExploreWorkspace**: 探索工作空间（初始化时调用）
+- **CreatePlan/UpdatePlan/ReadPlan**: 计划管理
+- **DelegateToTactical**: 委派战术任务（核心工具！）
+- **GetUserConfirmation**: 请求用户输入
+- **ReadFile/WriteFile/RunCommand**: 直接执行简单操作
+
+## 工作原则
+- 主动使用工具，不要只说要做什么
+- 遇到复杂执行任务时委派给战术层
+- 保持计划文件更新，让用户看到进度
+- 遇到歧义时请求用户确认"""
+
+    def _get_tactical_prompt(self) -> str:
+        """战术层 System Prompt（引导专注执行）"""
+        return """你是战术执行 Agent（Tactical Agent），专注完成具体任务。
+
+## 执行原则
+1. **专注**：仅处理当前任务，忽略无关工作
+2. **准确**：优先正确性，3-7 步完成目标
+3. **诚实**：无法完成时立即报告原因和建议
+4. **简洁**：返回结果，不要解释详细过程
+
+## 禁止行为
+- 不要创建高层计划（你的任务已被战略层定义）
+- 不要请求用户确认（报告问题即可）
+- 不要访问其他任务的结果
+- 不要偏离任务目标做额外工作
+
+## 可用工具
+仅限：ReadFile, WriteFile, RunCommand
+
+## 失败报告格式
+如无法完成，在最后一条消息中说明：
+```
+STATUS: FAILED
+REASON: [具体原因，如"缺少 pandas 包"或"数据格式错误"]
+SUGGESTION: [建议，如"pip install pandas"或"检查数据文件格式"]
+```
+
+## 成功报告格式
+完成后说明：
+```
+STATUS: SUCCESS
+RESULT: [结果摘要，如"已生成 summary.json，包含 10 列统计信息"]
+OUTPUT_FILES: [输出文件列表]
+```"""
+
+    # ============================================
+    # 动态上下文构建（新增）
+    # ============================================
+
+    def _build_dynamic_context(self) -> List[Dict]:
+        """
+        动态构建上下文（借鉴 claude_agent 架构）
+
+        Returns:
+            完整的消息列表（包含动态注入的信息）
+        """
+        full_messages = []
+
+        # 战略模式：注入工作空间快照
+        if self.mode == "strategic":
+            workspace_snapshot = self._get_workspace_snapshot()
+            if workspace_snapshot:
+                full_messages.append({
+                    "role": "user",
+                    "content": f"<workspace_context>\n{workspace_snapshot}\n</workspace_context>"
+                })
+
+        # 添加压缩后的历史消息
+        full_messages.extend(self._compress_history())
+
+        # 战略模式：注入计划摘要
+        if self.mode == "strategic":
+            plan_summary = self._get_plan_summary()
+            if plan_summary:
+                full_messages.append({
+                    "role": "user",
+                    "content": f"<current_plan>\n{plan_summary}\n</current_plan>"
+                })
+
+        return full_messages
+
+    def _get_workspace_snapshot(self) -> str:
+        """
+        获取工作空间快照（缓存机制：仅第一次扫描）
+
+        Returns:
+            工作空间状态描述
+        """
+        if self._workspace_cache is None:
+            self._workspace_cache = self._scan_workspace()
+
+        if not self._workspace_cache:
+            return ""
+
+        return f"""当前工作空间状态：
+- 目录：{self.workspace}
+- 数据文件：{', '.join(self._workspace_cache.get('data_files', [])) or '无'}
+- 脚本文件：{', '.join(self._workspace_cache.get('scripts', [])) or '无'}
+- 输出文件：{', '.join(self._workspace_cache.get('outputs', [])) or '无'}
+- 总文件数：{self._workspace_cache.get('total_files', 0)}"""
+
+    def _scan_workspace(self) -> Dict:
+        """
+        扫描工作空间目录
+
+        Returns:
+            包含文件分类信息的字典
+        """
+        result = {
+            "data_files": [],
+            "scripts": [],
+            "outputs": [],
+            "total_files": 0
+        }
+
+        try:
+            for root, dirs, files in os.walk(self.workspace):
+                # 跳过隐藏目录和 __pycache__
+                dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__']
+
+                for f in files:
+                    if f.startswith('.'):
+                        continue
+
+                    result["total_files"] += 1
+                    rel_path = os.path.relpath(os.path.join(root, f), self.workspace)
+
+                    if f.endswith(('.csv', '.xlsx', '.json', '.txt')):
+                        result["data_files"].append(rel_path)
+                    elif f.endswith('.py'):
+                        result["scripts"].append(rel_path)
+                    elif f.endswith(('.png', '.jpg', '.pdf', '.html')):
+                        result["outputs"].append(rel_path)
+        except Exception as e:
+            print(f"警告: 扫描工作空间失败: {e}")
+
+        return result
+
+    def _get_plan_summary(self) -> str:
+        """
+        从 plan.md 提取当前进度摘要
+
+        Returns:
+            计划摘要（仅当前阶段和问题）
+        """
+        if not os.path.exists(self.plan_file):
+            return ""
+
+        try:
+            with open(self.plan_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # 简化版：返回完整内容（未来可优化为仅提取关键部分）
+            # TODO: 可以进一步优化，仅提取当前进行中的阶段和 Active Issues
+            if len(content) > 1000:
+                return content[:1000] + "\n...(计划已截断)"
+            return content
+        except Exception as e:
+            return f"读取计划失败: {e}"
+
+    def _compress_history(self) -> List[Dict]:
+        """
+        压缩历史消息（滑动窗口策略）
+
+        Returns:
+            压缩后的消息列表
+        """
+        # 如果消息不多，直接返回
+        if len(self.messages) <= 12:
+            return self.messages
+
+        # 保留最近 10 条消息，旧消息汇总
+        compressed = []
+
+        # 保留第一条用户消息（初始任务）
+        if self.messages and self.messages[0]["role"] == "user":
+            compressed.append(self.messages[0])
+
+        # 中间历史汇总（简化版：直接省略）
+        # TODO: 未来可以使用 LLM 汇总中间历史
+        if len(self.messages) > 12:
+            compressed.append({
+                "role": "user",
+                "content": "<previous_work>\n已省略前期执行细节。最近 10 轮对话如下：\n</previous_work>"
+            })
+
+        # 保留最近 10 条
+        compressed.extend(self.messages[-10:])
+
+        return compressed
 
     def run(self, user_input: str, max_turns: int = 30) -> str:
         """
-        主运行循环
+        主运行循环（响应式架构）
 
         Args:
             user_input: 用户输入
@@ -84,23 +312,17 @@ class PlanKimiAgent:
         print(f"用户: {user_input}")
         print(f"{'='*60}\n")
 
-        # 添加系统提示
-        self.messages.append({
-            "role": "system",
-            "content": self._get_system_prompt()
-        })
-
-        # 添加用户消息
+        # 仅添加用户消息到历史（系统提示通过动态上下文注入）
         self.messages.append({
             "role": "user",
             "content": user_input
         })
 
-        # 主循环
+        # 主循环（响应式）
         for turn in range(max_turns):
             print(f"\n--- 回合 {turn + 1} ---")
 
-            # 调用 Kimi API
+            # 调用 Kimi API（使用动态上下文）
             response = self._call_kimi()
 
             if not response:
@@ -119,11 +341,15 @@ class PlanKimiAgent:
         return self._get_final_output()
 
     def _call_kimi(self) -> Any:
-        """调用 Kimi API"""
+        """调用 Kimi API（使用动态上下文和 system prompt）"""
         try:
+            # 构建动态上下文
+            full_messages = self._build_dynamic_context()
+
+            # 调用 API（注入 system prompt）
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=self.messages,
+                messages=full_messages,
                 tools=self._get_tools(),
                 temperature=0.3
             )
@@ -182,8 +408,8 @@ class PlanKimiAgent:
         return False
 
     def _get_tools(self) -> List[Dict]:
-        """定义可用工具"""
-        return [
+        """定义可用工具（根据 mode 过滤）"""
+        all_tools = [
             # ===== 计划工具 =====
             {
                 "type": "function",
@@ -306,8 +532,106 @@ class PlanKimiAgent:
                         "required": ["command"]
                     }
                 }
+            },
+            # ===== 战略层新增工具 =====
+            {
+                "type": "function",
+                "function": {
+                    "name": "ExploreWorkspace",
+                    "description": "探索工作空间目录结构，了解可用资源。初始化时调用。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "DelegateToTactical",
+                    "description": "将具体执行任务委派给战术 Agent（上下文隔离）。用于：数据处理、统计计算、可视化、模型训练等需要 3-7 步的中等粒度任务。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "任务唯一标识（如 tactical_001）"
+                            },
+                            "objective": {
+                                "type": "string",
+                                "description": "清晰的任务目标（一句话描述）"
+                            },
+                            "context": {
+                                "type": "object",
+                                "properties": {
+                                    "files": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "输入文件列表"
+                                    },
+                                    "required_output": {
+                                        "type": "string",
+                                        "description": "期望输出"
+                                    },
+                                    "constraints": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "约束条件（如超时、数据要求）"
+                                    },
+                                    "relevant_info": {
+                                        "type": "string",
+                                        "description": "相关背景信息"
+                                    }
+                                },
+                                "description": "任务上下文（压缩的必要信息）"
+                            },
+                            "success_criteria": {
+                                "type": "string",
+                                "description": "如何验证任务完成"
+                            }
+                        },
+                        "required": ["task_id", "objective", "context", "success_criteria"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "GetUserConfirmation",
+                    "description": "请求用户确认或输入。Agent 会暂停等待用户通过 input() 提供答案。用于重大决策点。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "question": {
+                                "type": "string",
+                                "description": "问题描述"
+                            },
+                            "options": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "选项列表（可选）"
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": "为什么需要确认"
+                            }
+                        },
+                        "required": ["question"]
+                    }
+                }
             }
         ]
+
+        # 根据 mode 过滤工具
+        if self.mode == "tactical":
+            # 战术层：仅保留基础执行工具
+            tactical_tool_names = {"ReadFile", "WriteFile", "RunCommand"}
+            return [tool for tool in all_tools
+                    if tool["function"]["name"] in tactical_tool_names]
+        else:
+            # 战略层：所有工具
+            return all_tools
 
     def _execute_tool(self, tool_name: str, tool_args: Dict) -> str:
         """执行工具"""
@@ -326,6 +650,13 @@ class PlanKimiAgent:
                 return self._tool_write_file(tool_args["path"], tool_args["content"])
             elif tool_name == "RunCommand":
                 return self._tool_run_command(tool_args["command"])
+            # 新增：战略层工具
+            elif tool_name == "ExploreWorkspace":
+                return self._tool_explore_workspace()
+            elif tool_name == "DelegateToTactical":
+                return self._tool_delegate_to_tactical(tool_args)
+            elif tool_name == "GetUserConfirmation":
+                return self._tool_get_user_confirmation(tool_args)
             else:
                 return f"错误: 未知工具 {tool_name}"
         except Exception as e:
@@ -547,6 +878,112 @@ class PlanKimiAgent:
             return "❌ 命令执行超时 (超过60秒)"
         except Exception as e:
             return f"❌ 命令执行失败: {str(e)}"
+
+    # ===== 新增：战略层工具实现 =====
+
+    def _tool_explore_workspace(self) -> str:
+        """探索工作空间目录（调用缓存机制）"""
+        # 重新扫描以获取最新状态
+        self._workspace_cache = self._scan_workspace()
+
+        result = self._workspace_cache
+        return f"""✓ 工作空间探索完成
+
+数据文件 ({len(result['data_files'])}):
+{chr(10).join('- ' + f for f in result['data_files'][:10])}
+{'...(省略 ' + str(len(result['data_files']) - 10) + ' 个)' if len(result['data_files']) > 10 else ''}
+
+脚本文件 ({len(result['scripts'])}):
+{chr(10).join('- ' + f for f in result['scripts'][:5])}
+{'...(省略 ' + str(len(result['scripts']) - 5) + ' 个)' if len(result['scripts']) > 5 else ''}
+
+输出文件 ({len(result['outputs'])}):
+{chr(10).join('- ' + f for f in result['outputs'][:5])}
+{'...(省略 ' + str(len(result['outputs']) - 5) + ' 个)' if len(result['outputs']) > 5 else ''}
+
+总文件数: {result['total_files']}"""
+
+    def _tool_delegate_to_tactical(self, params: Dict) -> str:
+        """委派任务给战术 SubAgent（上下文隔离）"""
+        task_id = params.get("task_id", "tactical_task")
+        objective = params["objective"]
+        context = params.get("context", {})
+        success_criteria = params.get("success_criteria", "任务完成")
+
+        print(f"\n{'='*60}")
+        print(f"🎯 启动战术 Agent: {task_id}")
+        print(f"   目标: {objective}")
+        print(f"{'='*60}\n")
+
+        # 创建战术 Agent（新实例，上下文隔离）
+        tactical = PlanKimiAgent(api_key=self.api_key, mode="tactical")
+
+        # 压缩任务描述（<500 tokens）
+        tactical_prompt = f"""执行战术任务：
+
+目标：{objective}
+
+成功标准：{success_criteria}
+
+上下文信息：
+{json.dumps(context, ensure_ascii=False, indent=2)}
+
+要求：
+- 专注此任务，3-7 步完成
+- 无法完成时诚实报告原因并建议替代方案
+- 只返回结果，不要解释详细过程
+"""
+
+        # 执行战术任务（限制 10 轮）
+        try:
+            result = tactical.run(tactical_prompt, max_turns=10)
+
+            print(f"\n{'='*60}")
+            print(f"✓ 战术任务完成: {task_id}")
+            print(f"{'='*60}\n")
+
+            # 返回压缩的结果摘要
+            return f"""战术任务执行完成
+
+任务ID: {task_id}
+状态: 成功
+结果摘要:
+{result[:500] if len(result) > 500 else result}
+"""
+        except Exception as e:
+            return f"""战术任务执行失败
+
+任务ID: {task_id}
+状态: 失败
+错误: {str(e)}
+建议: 检查任务定义和上下文是否完整
+"""
+
+    def _tool_get_user_confirmation(self, params: Dict) -> str:
+        """请求用户确认/输入（暂停等待）"""
+        question = params["question"]
+        options = params.get("options", [])
+        reason = params.get("reason", "")
+
+        print(f"\n{'='*60}")
+        print(f"需要您的确认")
+        print(f"{'='*60}")
+        print(f"\n问题：{question}")
+        if reason:
+            print(f"原因：{reason}\n")
+
+        if options:
+            print("选项：")
+            for i, opt in enumerate(options, 1):
+                print(f"{i}. {opt}")
+            print()
+
+        # 等待用户输入
+        try:
+            answer = input("请输入您的选择: ").strip()
+            return f"用户选择：{answer}"
+        except (EOFError, KeyboardInterrupt):
+            return "用户取消输入"
 
     def _get_final_output(self) -> str:
         """获取最终输出"""

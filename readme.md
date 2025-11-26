@@ -1,66 +1,111 @@
-# Agent Architecture: Exploring AI Agent Patterns
+# Agent Architecture: Claude-Inspired Strategic-Tactical Pattern
 
-> Multi-stage AI agent implementations exploring Claude-like patterns using Moonshot Kimi API. Includes DA-Code benchmark integration demonstrating real-world problem-solving capabilities.
+> Exploring responsive agent architectures through practical implementation, combining Claude's System Prompt-driven philosophy with strategic-tactical separation for complex task execution.
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## Overview
+## Core Architecture Philosophy
 
-This project explores different agent architecture patterns through practical implementation, progressing from a minimal viable agent to sophisticated planning-capable systems. The core goal is to understand and replicate Claude-style agent behavior while balancing user experience with task accuracy.
+This project explores how to build AI agents that think like Claude: **responsive, LLM-driven decision-making** rather than hardcoded execution loops. The core innovation combines Claude's architectural principles with a strategic-tactical separation pattern to handle complex multi-step tasks.
 
-**Key Achievement**: Integrated with the DA-Code benchmark (500 data analysis tasks), achieving a 29.7% avg score / 20.3% success rate on complex multi-step problems, with a clear roadmap for improvement through architectural iterations.
+---
 
-The project demonstrates three levels of agent sophistication:
-- **MinimalKimiAgent** (Stage 1): Production-ready foundation with tool calling and multi-turn conversation
-- **PlanKimiAgent** (Stage 2): Advanced planning with adaptive execution
-- **SimpleClaudeAgent** (Reference): Educational implementation showing Claude's architectural patterns
+### Two Key Architectural Innovations
 
-## Three Core Strengths
+**1. Responsive Architecture**
 
-### 1. Agent Architecture Understanding
+**The Problem**: Traditional agents use fixed execution cycles—regardless of task complexity, they must go through the complete Plan→Execute→Reflect→Loop flow. This leads to inefficiency for simple tasks and inflexibility for complex ones.
 
-Demonstrates deep comprehension of different agent patterns and their trade-offs:
+**The Innovation**: Let the LLM autonomously decide the next action at each moment, without predefined execution paths.
 
-- **Traditional vs Claude-Style**: Compares pre-planned execution loops with responsive, LLM-driven decision-making
-- **Progressive Complexity**: Three implementations showing architectural evolution (Minimal → Planning → Reference)
-- **Tool Integration**: Clean abstraction of tool calling (ReadFile, WriteFile, RunCommand) with safety mechanisms
-- **Multi-Turn Reasoning**: Proper conversation history management supporting 16+ turn interactions
-- **1400+ Lines of Production Python**: Well-documented, type-hinted code demonstrating professional coding practices
+**Implementation Mechanism**: Use System Prompts to teach the agent "how to think" (when to plan? when to execute? when to reflect?), rather than hardcoding "what to do" (step 1: plan, step 2: execute...) in code.
 
-### 2. Engineering Best Practices
+**Execution Flow Comparison**:
+```
+Traditional Agent (Fixed Loop):
+Plan → Execute → Reflect → Update Plan → Loop
+↓ Issues: Wasted resources on simple tasks, rigid adaptation for complex tasks
 
-Showcases production-grade software engineering:
+Responsive Agent (Dynamic Decision):
+User Message → LLM Decides → [Call Tools if needed] → Response → Continue
+↓ Benefits: Direct execution for simple tasks, natural planning trigger for complex tasks
+```
 
-- **Safety-First Design**: Command blacklist preventing destructive operations (`rm -rf`, `sudo`, `shutdown`)
-- **Comprehensive Logging**: Dual-format conversation logs (human-readable `.txt` + structured `.json`)
-- **Workspace Isolation**: All agent operations confined to `agent_workspace/` preventing accidental file corruption
-- **DA-Code Benchmark Integration**: Official evaluation framework with 500 tasks across 7 categories
-- **Dataset Methodology**: Stratified train/val/test splits (50/50/59) with balanced difficulty distribution
-- **Timeout Protection**: 60-second execution limits preventing infinite loops
-- **Error Handling**: Graceful degradation with informative error messages
+**Key Insight**: Code defines the agent's architectural capabilities (tools, memory, context). System Prompt defines the agent's behavioral patterns (decision-making logic). Transferring control to the LLM achieves higher adaptability.
 
-### 3. Problem-Solving Ability
+---
 
-Demonstrates honest assessment of capabilities with clear improvement strategy:
+**2. Strategic-Tactical Separation Pattern**
 
-| Metric | Value | Context |
-|--------|-------|---------|
-| **Avg Score** | 29.7% | DA-Code test set (59 complex tasks) |
-| **Success Rate** | 20.3% (12/59) | Complete task success |
-| **Easy Tasks** | 100% (1/1) | Simple workflows fully solved |
-| **Medium Tasks** | 57% (8/14) | 4-7 step problems mostly working |
-| **Hard Tasks** | 7% (3/44) | 8+ step problems, main improvement area |
+**The Problem**: Complex tasks face two challenges—① Context explosion (long history exhausts tokens); ② Planning-execution confusion (strategic thinking mixed with operational details, degrading decision quality).
 
-**Key Insights**:
-- Data Insight category: 100% success (strongest area)
-- Visualization tasks: 0% success → primary improvement opportunity
-- Hard task performance: 7% → needs better planning (Stage 2 focus)
+**The Innovation**: Achieve hierarchical separation through **single class + dual modes**, without building two separate agent classes.
 
-**Improvement Roadmap**:
-- Stage 2 (Plan Agent): Target 35% avg score through adaptive planning
-- Stage 3 (Memory & Learning): Target 50%+ through prompt optimization
-- Stage 4 (Auto-Evolution): Target 70%+ through self-improvement
+**Architecture Design**:
+```
+PlanKimiAgent(mode="strategic")  ←─ User interaction entry point
+    ↓ Responsibilities:
+    - Explore workspace, understand resource distribution
+    - Decompose tasks into 3-7 step subtasks
+    - Create and maintain high-level plans
+    - Decide when to delegate to tactical layer
+    - Request user confirmation for critical decisions
+    ↓
+    └─→ DelegateToTactical()
+        ↓ Create new instance
+        PlanKimiAgent(mode="tactical")  ←─ Isolated context
+            ↓ Responsibilities:
+            - Focus on executing single subtask (3-7 steps)
+            - No high-level planning
+            - Report blockers when encountered
+            - Return result summary upon completion
+```
+
+**Context Management Strategy**:
+```
+Strategic Layer Context (~8K tokens):
+- Workspace panorama (file tree, dataset overview)
+- Current plan summary (goals, steps, progress)
+- Sliding window of history (recent 10 messages)
+
+Tactical Layer Context (<500 tokens):
+- Subtask description (objective + success criteria)
+- Minimal necessary context (relevant file paths, data samples)
+- No history (fresh conversation)
+```
+
+**Key Insight**: Through differentiated System Prompt guidance (strategic prompts emphasize planning, tactical prompts emphasize execution) + SubAgent pattern (create new instances to isolate context), achieve hierarchical separation within a single codebase. Avoid maintaining two codebases while gaining clear responsibility division.
+
+---
+
+### Architecture Evolution: Progressive Understanding
+
+This project contains three implementations, demonstrating progressive deepening of agent architecture understanding:
+
+**Stage 1 - MinimalKimiAgent (Responsive Foundation)**
+- Core mechanism: LLM-driven decision loop, multi-turn conversation management
+- Toolset: ReadFile, WriteFile, RunCommand (3 basic tools)
+- Production features: Workspace isolation, command blacklist, timeout protection, dual-format logging
+
+**Stage 2 - PlanKimiAgent (Strategic-Tactical Architecture)**
+- Core mechanism: Single-class dual-mode (strategic/tactical mode)
+- System evolution: System Prompt-driven behavior differentiation, dynamic context building
+- Tool expansion: 9 tools (+planning tools, +strategic tools, basic tools)
+- Architecture pattern: SubAgent pattern for context isolation
+
+**Stage 3/4 - Future Directions**
+- Stage 3: Memory & Learning (learn from successful patterns, automatic prompt optimization)
+- Stage 4: Self-Evolution (self-evaluation, multi-iteration improvement, automatic knowledge expansion)
+
+---
+
+### Engineering Principles
+
+- **Workspace Isolation**: All agent operations confined to `agent_workspace/` directory, preventing accidental impact on project files
+- **Safety-First**: Command blacklist (prohibit `rm -rf`, `sudo`, etc.) + 60-second timeout protection
+- **Comprehensive Logging**: Dual-format recording (human-readable `.txt` + structured `.json`) for debugging and analysis
+- **Benchmark Integration**: DA-Code evaluation framework (500 real-world data analysis tasks) for honest capability assessment
 
 ## Quick Start
 
@@ -156,7 +201,7 @@ See `examples/` directory for more comprehensive demos including data analysis a
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for detailed technical breakdown.
 
-## Three Agent Implementations
+## Implementation Details
 
 ### MinimalKimiAgent (Stage 1) - Production Ready
 
@@ -189,43 +234,47 @@ Read the CSV file sales_data.csv and:
 
 ---
 
-### PlanKimiAgent (Stage 2) - Advanced Planning
+### PlanKimiAgent (Stage 2) - Strategic-Tactical Architecture
 
-**File**: [`plan_kimi_agent.py`](plan_kimi_agent.py) (654 lines)
+**File**: [`plan_kimi_agent.py`](plan_kimi_agent.py) (919 lines)
 
-Adds dynamic planning capability with persistent plan management and adaptive execution.
+Implements Claude's responsive philosophy with strategic-tactical separation for complex multi-step tasks.
 
-**Features**:
-- **Plan Creation**: Generates `plan.md` at task start with structured steps
-- **Adaptive Execution**: Adjusts plan based on intermediate results
-- **Plan Persistence**: Human-readable markdown plans with status tracking
-- **Step Management**: Create, update, skip, complete, log steps dynamically
-- **Extended Turns**: 30+ turn capacity for complex tasks
-- **All Stage 1 Features**: Safety, logging, workspace isolation
+**Core Architecture**:
+- **Single Class, Dual Modes**: Same `PlanKimiAgent` class operates in "strategic" or "tactical" mode
+- **System Prompt-Driven**: Behavior controlled by mode-specific System Prompts, not code logic
+- **Dynamic Context Building**: Constructs context per turn (workspace snapshot + plan + sliding window)
+- **SubAgent Pattern**: Strategic layer delegates to tactical instances for focused execution
 
-**Plan Tools**:
-- `CreatePlan`: Initialize structured plan file
-- `UpdatePlan`: Modify plan based on execution progress
-- `ReadPlan`: Review current plan state
+**Nine Tools** (filtered by mode):
+- **Planning Tools** (strategic only): CreatePlan, UpdatePlan, ReadPlan
+- **Execution Tools** (both modes): ReadFile, WriteFile, RunCommand
+- **Strategic Tools** (strategic only): ExploreWorkspace, DelegateToTactical, GetUserConfirmation
 
-**When to use**: Complex multi-step tasks, scenarios requiring plan visualization, adaptive workflows
+**Example - Strategic-Tactical Interaction**:
+```python
+# Strategic layer: High-level planning
+strategic_agent = PlanKimiAgent(mode="strategic")
+result = strategic_agent.run("""
+Analyze customer_data.csv:
+1. Calculate customer lifetime value by segment
+2. Identify top 10 customers
+3. Create visualization showing trends
+4. Write executive summary
+""", max_turns=30)
 
-**Example Plan File**:
-```markdown
-# Task: Analyze sales data and create visualization
-
-## Steps
-- [x] Read sales_data.csv
-- [~] Calculate regional statistics
-- [ ] Create matplotlib visualization
-- [ ] Save to output/sales_chart.png
-
-## Execution Log
-[2025-01-26 10:30] Step 1 complete - found 1000 records
-[2025-01-26 10:32] Step 2 in progress - calculating...
+# Internally, strategic agent might:
+# 1. Call ExploreWorkspace() to understand files
+# 2. Call CreatePlan() to structure approach
+# 3. Call DelegateToTactical() for step 1:
+#    - Creates tactical agent with compressed context
+#    - Tactical executes: ReadFile → RunCommand (pandas) → WriteFile
+#    - Returns result summary to strategic
+# 4. Continue with steps 2-4, delegating as needed
+# 5. Call GetUserConfirmation() before final output
 ```
 
-**Status**: In development, targeting 35% avg score on DA-Code tasks
+**When to use**: Complex multi-step tasks requiring both high-level planning and focused execution.
 
 ---
 
@@ -260,59 +309,34 @@ Loop                   Add to history → Loop
 
 **Note**: Intentionally simplified for clarity - missing production safety checks
 
-## Benchmark Performance
+## Benchmark: Honest Assessment
 
-### DA-Code Test Set (59 tasks)
+We use DA-Code (500 data analysis tasks) for objective evaluation. Current baseline with MinimalKimiAgent:
 
-Comprehensive evaluation on complex data analysis tasks requiring multi-step reasoning, data manipulation, visualization, and machine learning.
+**Test Set Results** (59 complex tasks): 29.7% avg score, 20.3% success rate (12/59 complete)
 
-| Difficulty | Count | Avg Score | Success Rate | Status |
-|------------|-------|-----------|--------------|--------|
-| **Easy** (1-3 steps) | 1 | 100% | 100% (1/1) | ✓ Complete |
-| **Medium** (4-7 steps) | 14 | 57% | 57% (8/14) | Working |
-| **Hard** (8+ steps) | 44 | 18% | 7% (3/44) | In Progress |
-| **Overall** | **59** | **29.7%** | **20.3% (12/59)** | **Baseline** |
+**What works well**:
+- Data insight extraction (query formulation, reasoning about structured data)
+- Simple statistical analysis
+- File I/O and basic data manipulation
 
-### Performance by Category
+**What needs improvement**:
+- Visualization (matplotlib/seaborn syntax, plot configuration)
+- Multi-step planning for complex tasks (8+ steps)
+- Error recovery when initial approach fails
 
-| Category | Tasks | Avg Score | Success Rate | Key Challenge |
-|----------|-------|-----------|--------------|---------------|
-| Data Insight | 4 | 100% | 100% (4/4) | ✓ Solved |
-| Data Manipulation | 9 | 11% | 0% (0/9) | Complex pandas |
-| Data Visualization | 11 | 0% | 0% (0/11) | **Primary gap** |
-| Machine Learning | 14 | 21% | 14% (2/14) | Model selection |
-| Statistical Analysis | 9 | 44% | 33% (3/9) | Good progress |
-| NLP | 7 | 29% | 14% (1/7) | Text processing |
-| GCP Specific | 5 | 40% | 40% (2/5) | Cloud billing |
+**Learning approach**: The project emphasizes honest metrics over inflated claims. Baseline scores establish starting point for architectural improvements in Stages 2-4.
 
-### Key Insights
-
-1. **Data Insight Excellence**: 100% success (4/4 tasks)
-   - Agent excels at query formulation and insight extraction
-   - Demonstrates strong reasoning for structured questions
-
-2. **Visualization Gap**: 0% success (0/11 tasks)
-   - Agent struggles with matplotlib/seaborn syntax
-   - Plan to add visual tool knowledge in Stage 2
-   - Will create specialized visualization examples
-
-3. **Hard Task Challenge**: Only 7% success rate (3/44)
-   - Multi-step planning needs improvement
-   - PlanKimiAgent (Stage 2) specifically targets this
-   - Dynamic planning should improve task breakdown
-
-4. **Partial Credit System**: 29.7% avg score vs 20.3% success
-   - Many tasks partially solved (some steps correct)
-   - Shows agent understands tasks but execution falters
-   - Error recovery is key improvement area
+Detailed breakdown available in `docs/baseline_report.md`.
 
 ## Project Structure
 
 ```
 agent_architecture/
-├── minimal_kimi_agent.py          # Stage 1: Production agent (423 lines)
-├── plan_kimi_agent.py              # Stage 2: Planning agent (654 lines)
+├── minimal_kimi_agent.py          # Stage 1: Responsive foundation (423 lines)
+├── plan_kimi_agent.py              # Stage 2: Strategic-tactical (919 lines)
 ├── claude_agent_pseudocode.py      # Reference: Claude patterns (527 lines)
+├── test_strategic_tactical.py      # Tests for Stage 2 architecture
 │
 ├── agent_workspace/                # Isolated execution environment
 │   ├── da-code/                    # DA-Code benchmark (500 tasks)
@@ -443,12 +467,34 @@ Build a classification model:
 
 ## Key Design Decisions
 
-### Why Moonshot Kimi API?
+### Why Responsive Architecture Over Fixed Cycles?
 
-- **OpenAI Compatibility**: Drop-in replacement using OpenAI SDK, easy model swapping
-- **Strong Multi-Turn Support**: Handles 16+ turn conversations reliably
-- **Reasonable Pricing**: Cost-effective for development and testing
-- **China Presence**: Project originated in China, Kimi has good local support
+**Traditional agents hardcode the workflow**:
+- Every task goes through: Plan → Execute → Reflect → Update
+- Inefficient for simple tasks (unnecessary planning overhead)
+- Rigid for complex tasks (can't adapt mid-execution)
+
+**Responsive architecture trusts the LLM**:
+- System Prompt teaches decision-making patterns
+- LLM decides: "Do I need to plan?" "Should I execute now?" "Is reflection needed?"
+- Simple tasks execute immediately; complex tasks trigger planning naturally
+- Adapts to unexpected results without code changes
+
+**Result**: Same agent handles "What's 2+2?" and "Build ML pipeline" efficiently.
+
+### Why Mode Parameter Over Separate Classes?
+
+**Could have built**: `StrategicAgent` and `TacticalAgent` as separate classes.
+
+**Chose instead**: Single `PlanKimiAgent(mode="strategic"|"tactical")`.
+
+**Rationale**:
+- **Code reuse**: 80% of logic is identical (tool execution, message handling, logging)
+- **Simpler SubAgent creation**: Just `PlanKimiAgent(mode="tactical")` instead of importing new class
+- **Unified interface**: Users learn one API, mode is implementation detail
+- **Easier testing**: Test mode switching logic, not two separate codebases
+
+**The separation happens in System Prompts, not code structure.**
 
 ### Why Workspace Isolation?
 
@@ -463,8 +509,7 @@ All agent operations restricted to `agent_workspace/`:
 - **Real-World Tasks**: Actual data analysis problems, not toy examples
 - **Comprehensive**: 500 tasks across 7 categories with varying difficulty
 - **Official Metrics**: Standardized evaluation for fair comparison
-- **Challenging**: 29.7% avg score shows significant room for improvement
-- **Educational**: Learn what works and what doesn't through honest assessment
+- **Educational**: Honest assessment reveals areas for improvement
 
 ## FAQ
 
@@ -497,39 +542,44 @@ A: Absolutely! See `_get_tools()` method in agent files:
 2. Add handler method (e.g., `_execute_new_tool()`)
 3. Register in tool dispatcher
 
-**Q: What's the difference between Stage 1 and Stage 2?**
+**Q: What's the difference between MinimalKimiAgent and PlanKimiAgent?**
 
 A:
-- **Stage 1 (Minimal)**: Reactive execution, no explicit planning, lighter weight
-- **Stage 2 (Plan)**: Proactive planning, plan.md persistence, adaptive execution
+- **MinimalKimiAgent**: Single responsive loop, no strategic-tactical separation. Best for simple-to-medium tasks where the LLM can handle everything in one context.
+- **PlanKimiAgent**: Adds strategic-tactical separation via System Prompt guidance and SubAgent pattern. Best for complex tasks requiring high-level planning + focused execution with context management.
 
-Choose Stage 1 for simple tasks or when speed matters. Use Stage 2 for complex multi-step problems.
+**Q: When should I use strategic vs tactical mode?**
+
+A: You typically don't choose directly. Use `PlanKimiAgent(mode="strategic")` for your main task. The strategic layer will automatically create tactical SubAgents when needed via `DelegateToTactical()`. Only use `mode="tactical"` directly if you're testing tactical execution in isolation.
 
 ## Development Roadmap
 
-- [x] **Stage 1: Minimal Agent** (Complete)
-  - Core tool calling mechanics
-  - Multi-turn conversation support
-  - Production-grade safety and logging
-  - DA-Code baseline: 29.7% avg score / 20.3% success
+The project follows a staged approach to understanding agent architectures:
 
-- [ ] **Stage 2: Plan Agent** (In Progress)
-  - Dynamic planning with plan.md persistence
-  - Adaptive execution based on results
-  - Target: 35%+ avg score on DA-Code tasks
-  - Improved visualization capability
+- [x] **Stage 1: Responsive Foundation** (Complete)
+  - Implemented Claude's responsive loop architecture
+  - Tool calling with multi-turn conversation
+  - Production safety mechanisms (workspace isolation, command blacklist)
+  - Baseline DA-Code evaluation for honest assessment
+
+- [x] **Stage 2: Strategic-Tactical Separation** (Complete)
+  - Single-class, dual-mode architecture (`mode="strategic"|"tactical"`)
+  - System Prompt-driven behavior differentiation
+  - Dynamic context building (workspace snapshot + plan + sliding window)
+  - SubAgent pattern for context-isolated execution
+  - Nine tools with mode-based filtering
 
 - [ ] **Stage 3: Memory & Learning** (Planned)
-  - Learn from successful task patterns
-  - Prompt optimization based on history
-  - Tool usage pattern recognition
-  - Target: 50%+ avg score
+  - Learn from successful execution patterns across tasks
+  - Automatic System Prompt optimization based on error analysis
+  - Tool usage pattern recognition and refinement
+  - Cross-task knowledge transfer
 
-- [ ] **Stage 4: Auto-Evolution** (Planned)
-  - Self-evaluation and error analysis
-  - Multi-epoch prompt refinement
-  - Automatic tool knowledge expansion
-  - Target: 70%+ DA-Code benchmark
+- [ ] **Stage 4: Self-Evolution** (Planned)
+  - Agent evaluates own performance without human feedback
+  - Multi-epoch prompt refinement using DA-Code train/val sets
+  - Automatic tool knowledge expansion from documentation
+  - Meta-learning: agent improves how it learns
 
 ## References
 
