@@ -1,91 +1,296 @@
-# Agent 架构：Claude 启发的战略-战术模式
+# Claude Agent 复刻
 
-> 通过实际实现探索响应式代理架构，将 Claude 的系统提示驱动理念与战略-战术分离相结合，用于复杂任务执行。
+> 使用 Kimi API 渐进式复刻 Claude Code 的 Agent 架构，展示从最小基础到高级能力的系统提示词驱动响应式 Agent。
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## 概述
+## 项目愿景
 
-本项目展示了如何构建像 Claude 一样思考的 AI 代理：**响应式、LLM 驱动的决策制定**，而不是硬编码的执行循环。核心创新在于将 Claude 的架构原则与战略-战术分离模式相结合，用于处理复杂的多步骤任务。
+**目标**: 忠实复刻 Claude Code 的 Agent 架构模式，同时保持与 Kimi (月之暗面) API 的兼容性。
 
-### 两大关键架构见解
+**方法**: 分阶段演进，模仿 Claude 的核心机制：
+- **Stage 1**: 响应式基础（最小 Agent 与工具调用）
+- **Stage 2**: 系统提示词 + 动态上下文 + Todo 追踪
+- **Stage 3**: Human-in-the-Loop 交互（计划中）
+- **Stage 4**: 自我演进与学习（未来）
 
-**1. Claude 的响应式理念**（vs 传统代理）
+**理念**: 通过动手实现掌握 Claude Agent 架构精髓，而非仅仅阅读文档。
 
-传统代理遵循固定周期：
+---
+
+## Claude 核心架构原则
+
+### 1. 响应式架构
+- **无预定义执行循环**（Plan→Execute→Reflect）
+- **LLM 动态决定下一步行动**
+- **系统提示词教"如何思考"**，而非"做什么"
+
+**传统 Agent**：
+```python
+while not done:
+    plan = agent.plan()      # 预生成完整计划
+    for step in plan:
+        execute(step)        # 执行预定义步骤
+    reflect()                # 单独的反思阶段
 ```
-规划 → 执行 → 反思 → 循环
+
+**Claude 风格 Agent**（本项目）：
+```python
+for message in conversation:
+    context = build_dynamic()     # 每回合重建上下文
+    response = llm(
+        system=workflow_prompt,   # "规划"发生在这里！
+        messages=context
+    )
+    if tool_use:
+        execute_and_continue()
 ```
 
-Claude 风格的代理动态响应：
+### 2. 系统提示词驱动行为
+- 通过全面系统提示词（~400 tokens）提供工作流指导
+- 每次 API 调用时动态构建上下文
+- 环境感知（时间、工作区、回合数）
+
+### 3. Todo 短期记忆
+- 通过系统消息进行任务追踪
+- 进度可见性：[ ] pending, [→] in_progress, [✓] completed
+- 无需外部状态文件的自我管理
+
+---
+
+## 实现阶段
+
+### Stage 1: 最小 Kimi Agent（响应式基础）
+
+**文件**: [`minimal_kimi_agent.py`](minimal_kimi_agent.py)（423 行）
+**状态**: ✅ 生产就绪
+
+**核心特性**：
+- 多轮对话管理
+- 工具调用：ReadFile、WriteFile、RunCommand
+- 工作区隔离和安全机制
+- 对话日志记录（TXT + JSON）
+
+**架构**：
 ```
-消息 → LLM 决策 → 工具（如需要）→ 继续
+用户输入 → API 调用 → 工具执行 → 循环
 ```
 
-**区别**：系统提示告诉 LLM *如何思考*，而不是*执行什么步骤*。
+**性能**：DA-Code 测试集 29.7% 平均得分，20.3% 成功率
 
-**2. 战略-战术分离**
+**适用场景**：简单到中等任务，可靠执行，预算敏感
 
-对于复杂任务，我们引入双层模式：
+**示例**：
+```python
+from minimal_kimi_agent import MinimalKimiAgent
 
-- **战略层**：高级规划、用户交互、任务分解（通过系统提示指导）
-- **战术层**：专注执行，隔离上下文（通过子代理模式）
+agent = MinimalKimiAgent()
+result = agent.run("""
+读取 sales_data.csv 并：
+1. 计算各地区销售总额
+2. 识别表现最佳的产品
+3. 将结果写入 summary.txt
+""", max_turns=10)
+```
 
-这反映了人类处理复杂问题的方式：战略思考 + 战术执行，**而不是将这种分离硬编码**为两个类。
+---
 
-### 三个代理实现
+### Stage 2: 动态规划 Agent（系统提示词 + 上下文）
 
-- **MinimalKimiAgent**（阶段 1）：展示核心响应式机制的基础实现
-- **PlanKimiAgent**（阶段 2）：**战略-战术架构**，带有动态规划
-- **SimpleClaudeAgent**（参考）：Claude 模式的教育性实现
+**文件**: [`dynamic_plan_agent.py`](dynamic_plan_agent.py)（620 行）
+**状态**: ✅ 完成（2025-11-27）
 
-## 架构理念
+**关键创新**（Claude 架构模式）：
 
-### 1. 响应式优于预定义
+**1. 系统工作流提示词**（~400 tokens）
+- 核心工作原则（主动工具使用，迭代执行）
+- Todo 管理规则（何时创建，状态转换）
+- 思维模型（目标 → 所需信息 → 行动 → 完整性检查）
+- 工具使用指南
 
-**核心原则**：让 LLM 决定，不要硬编码工作流。
+**2. 动态上下文构建**
+每次 API 调用时重建上下文：
+```
+[系统工作流提示词]     ← 持久指导
+[环境信息]             ← 时间、工作区、回合
+[对话历史]             ← 用户 + 助手消息
+[Todo 状态]            ← 当前任务进度
+```
 
-### 2. 工程最佳实践
+**3. TodoUpdate 工具**
+- 操作：`add`、`update_status`、`complete`
+- 可视追踪：[ ] → [→] → [✓]
+- 自动任务管理
 
-展示生产级软件工程：
+**4. 增强日志记录**
+- JSON 日志包含 todos 和回合计数
+- 规划和执行的完整审计跟踪
 
-- **安全优先设计**：命令黑名单防止破坏性操作（`rm -rf`、`sudo`、`shutdown`）
-- **全面日志记录**：双格式对话日志（人类可读的 `.txt` + 结构化的 `.json`）
-- **工作区隔离**：所有代理操作都限制在 `agent_workspace/` 内，防止意外文件损坏
-- **DA-Code 基准测试集成**：官方评估框架，包含 7 个类别共 500 个任务
-- **数据集方法**：分层训练/验证/测试分割（50/50/59），难度分布均衡
-- **超时保护**：60 秒执行限制，防止无限循环
-- **错误处理**：优雅降级，提供信息丰富的错误消息
+**架构**：
+```
+用户输入
+    ↓
+构建动态上下文（系统提示词 + 环境 + 历史 + todos）
+    ↓
+API 调用
+    ↓
+工具执行（包括 TodoUpdate）
+    ↓
+循环
+```
 
-### 3. 问题解决能力
+**性能影响**：每次调用 +550 tokens，但完成率更高
 
-展示对能力的诚实评估，并提供明确的改进策略：
+**适用场景**：需要规划和追踪的复杂多步骤任务
 
-| 指标 | 数值 | 上下文 |
-|--------|-------|---------|
-| **平均得分** | 29.7% | DA-Code 测试集（59 个复杂任务） |
-| **成功率** | 20.3% (12/59) | 完全任务成功 |
-| **简单任务** | 100% (1/1) | 简单工作流完全解决 |
-| **中等任务** | 57% (8/14) | 4-7 步问题大部分正常工作 |
-| **困难任务** | 7% (3/44) | 8+ 步问题，主要改进领域 |
+**示例**：
+```python
+from dynamic_plan_agent import MinimalKimiAgent
+
+agent = MinimalKimiAgent()  # 同名类，增强行为！
+result = agent.run("""
+分析 customer_data.csv：
+1. 按细分市场计算客户终身价值
+2. 识别前 10 名客户
+3. 创建显示趋势的可视化
+4. 编写执行摘要
+""", max_turns=20)
+
+# Agent 将自动：
+# - 为 4 个任务创建 Todo 列表
+# - 追踪进度：[→] task_1, [ ] task_2, [ ] task_3, [ ] task_4
+# - 随着每个完成更新状态
+# - 在日志中保存完整的 todo 历史
+```
+
+**对比**：
+| 方面 | Stage 1 | Stage 2 |
+|------|---------|---------|
+| 代码大小 | 423 行 | 620 行 |
+| 工具 | 3 个 | 4 个 (+TodoUpdate) |
+| 系统提示词 | 无 | ~400 tokens |
+| 上下文 | 静态 | 动态 |
+| 任务记忆 | 无 | Todo 追踪 |
+| 适用于 | 简单任务 | 复杂多步骤任务 |
+
+---
+
+### Stage 3: Human-in-Loop Agent（计划中）
+
+**文件**: `human_loop_agent.py`（未来）
+**状态**: 🔄 计划中（2026 年 Q1）
+
+**计划功能**：
+
+**1. 关键决策确认**
+- Agent 在破坏性操作前请求批准
+- 用户可以审查和修改执行计划
+
+**2. 交互式调试**
+- 发生错误时，Agent 解释问题并寻求指导
+- 用户可以提供提示或替代方法
+
+**3. 工具**：
+- `AskUserConfirmation(operation, context)` → yes/no/modify
+- `RequestUserGuidance(problem, options)` → 用户选择
+- `ShowIntermediateResult(result, next_step)` → continue/adjust
+
+**示例流程**：
+```python
+# Agent: 即将删除 500 个文件
+AskUserConfirmation(operation="delete_files", context={...})
+# 用户批准 → Agent 继续
+
+# Agent: 脚本失败，ModuleNotFoundError
+RequestUserGuidance(problem="缺少 pandas", options=[...])
+# 用户："安装 pandas" → Agent 运行 pip install
+```
+
+---
+
+### 参考实现
+
+**文件**: [`claude_agent_pseudocode.py`](claude_agent_pseudocode.py)（527 行）
+**目的**: 展示 Claude 内部模式的教育参考
 
 **关键见解**：
-- 数据洞察类别：100% 成功（最强领域）
-- 可视化任务：0% 成功 → 主要改进机会
-- 困难任务表现：7% → 需要更好的规划（阶段 2 重点）
+- 响应式循环（无预规划）
+- 系统提示词驱动的工作流
+- Todo 短期记忆
+- 动态上下文构建
+- SubAgent 模式用于上下文隔离
 
-**改进路线图**：
-- 阶段 2（计划代理）：通过自适应规划达到 35% 平均得分
-- 阶段 3（记忆与学习）：通过提示优化达到 50%+ 平均得分
-- 阶段 4（自动进化）：通过自我改进达到 70%+ 平均得分
+**不适用于生产** - 为学习目的有意简化。
+
+---
+
+## 项目结构
+
+```
+claude_agent_replicate/
+├── minimal_kimi_agent.py          # Stage 1：响应式基础
+├── dynamic_plan_agent.py          # Stage 2：系统提示词 + 动态上下文 + Todo
+├── human_loop_agent.py            # Stage 3：Human-in-the-Loop（未来）
+├── claude_agent_pseudocode.py     # 参考：Claude 架构模式
+│
+├── test_dynamic_plan_agent.py     # Stage 2 测试
+│
+├── agent_workspace/               # 隔离的执行环境
+│   ├── da-code/                   # DA-Code 基准测试（500 个任务）
+│   │   ├── da_code/
+│   │   │   ├── source/            # 任务数据文件
+│   │   │   ├── gold/              # 标准答案
+│   │   │   └── configs/eval/      # 训练/验证/测试拆分
+│   │   └── da_agent/
+│   │       └── evaluators/        # 官方评估指标
+│   └── output_dir/                # Agent 执行输出
+│
+├── docs/
+│   ├── AGENT_EVOLUTION.md         # Stage 1→2→3 演进指南
+│   ├── ARCHITECTURE_COMPARISON.md # 前后技术对比
+│   ├── ARCHITECTURE.md            # 技术深度解析
+│   ├── baseline_report.md         # DA-Code 评估结果
+│   └── kimi_api.md                # API 配置说明
+│
+├── test/                          # DA-Code 评估框架
+│   ├── evaluate_dacode_official.py
+│   ├── test_dacode.py
+│   └── dataset_tasks.json
+│
+├── examples/                      # 使用演示
+├── logs/                          # 对话日志（gitignored）
+│
+├── README.md                      # 本文件
+├── README_CN.md                   # 中文版
+├── CLAUDE.md                      # 技术参考
+├── requirements.txt               # 依赖
+└── .env.example                   # 环境模板
+```
+
+---
+
+## Claude Code 与本项目的关键差异
+
+| 特性 | Claude Code | 本项目 |
+|------|-------------|--------|
+| **API** | Anthropic Claude API | Moonshot Kimi API（OpenAI 兼容） |
+| **系统提示词** | 单独的 `system` 参数 | 注入到消息数组中 |
+| **消息格式** | Anthropic 格式 | OpenAI 格式 |
+| **工具** | 原生 Claude 工具 | OpenAI function calling |
+| **语言** | TypeScript/Python | 仅 Python |
+| **范围** | 完整 IDE 集成 | 独立 Agent 框架 |
+
+**为什么这很重要**：理解如何将 Claude 架构适配到不同 API 可以教会我们核心原则，而不仅仅是实现细节。
+
+---
 
 ## 快速开始
 
 ### 先决条件
 
 - Python 3.8 或更高版本
-- Moonshot Kimi API 密钥 ([在此获取](https://platform.moonshot.cn/))
+- 月之暗面 Kimi API 密钥（[在此获取](https://platform.moonshot.cn/)）
 - （可选）用于 SimpleClaudeAgent 参考实现的 Anthropic API 密钥
 
 ### 安装
@@ -93,11 +298,11 @@ Claude 风格的代理动态响应：
 ```bash
 # 克隆仓库
 git clone <your-repo-url>
-cd agent_architecture
+cd claude_agent_replicate
 
 # 创建并激活虚拟环境
 python -m venv venv
-source venv/bin/activate  # Windows 上使用: venv\Scripts\activate
+source venv/bin/activate  # Windows 上：venv\Scripts\activate
 
 # 安装依赖
 pip install -r requirements.txt
@@ -112,7 +317,7 @@ cp .env.example .env
 ```python
 from minimal_kimi_agent import MinimalKimiAgent
 
-# 创建代理实例
+# 创建 Agent 实例
 agent = MinimalKimiAgent()
 
 # 运行简单任务
@@ -124,231 +329,58 @@ result = agent.run(
 print(result)
 ```
 
-请参阅 `examples/` 目录获取更多综合性演示，包括数据分析和可视化任务。
-
-## 架构
-
-### 代理执行循环
-
-```
-┌─────────────────┐
-│   用户输入      │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────────────┐
-│ 发送到 API              │
-│ (消息 + 工具定义)       │
-└────────┬────────────────┘
-         │
-         ▼
-    ┌────────────┐
-    │ API 输出   │
-    └────┬───────┘
-         │
-    ┌────▼──────────────┐
-    │ 工具调用？        │
-    └────┬──────┬───────┘
-    是   │      │ 否
-    ┌────▼───┐  │
-    │执行工具│  │
-    └────┬───┘  │
-         │      │
-    ┌────▼──────▼──────┐
-    │添加到历史记录    │
-    └────┬─────────────┘
-         │
-         └──► 继续或返回响应
-```
-
-### 传统 vs Claude 风格代理
-
-| 方面 | 传统代理 | Claude 风格代理（本项目） |
-|--------|-------------------|----------------------------------|
-| **规划** | 预定义步骤 | 动态每轮 |
-| **记忆** | 基于状态 | 消息历史 |
-| **决策制定** | 基于规则 | LLM 驱动 |
-| **迭代** | 固定周期（规划→执行→反思） | 响应式循环（消息→工具→继续） |
-| **适应性** | 低（遵循计划） | 高（根据结果调整） |
-
-请参阅 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 获取详细技术分析。
-
-## 三个代理实现
-
-### MinimalKimiAgent（阶段 1）- 生产就绪
-
-**文件**：[`minimal_kimi_agent.py`](minimal_kimi_agent.py)（423 行）
-
-基础实现，展示了具有生产级安全和日志记录的核心代理机制。
-
-**特性**：
-- **多轮对话**：完整的消息历史管理，支持 16+ 轮交互
-- **三个工具**：ReadFile（10K 字符限制）、WriteFile、RunCommand（60 秒超时）
-- **工作区隔离**：所有操作在 `agent_workspace/` 中，路径自动解析
-- **安全机制**：命令黑名单、超时、文件大小限制
-- **自动日志记录**：双格式对话日志（`.txt` + `.json`）
-- **错误处理**：优雅降级，提供信息丰富的消息
-
-**使用场景**：生产部署、可靠的工具调用、预算敏感场景
-
-**示例**：
-```python
-agent = MinimalKimiAgent()
-result = agent.run("""
-读取 CSV 文件 sales_data.csv 并：
-1. 按地区计算总销售额
-2. 识别表现最佳的产品
-3. 将结果写入 summary.txt
-""", max_turns=10)
-```
-
-**性能**：DA-Code 测试集 29.7% 平均得分 / 20.3% 成功率
+请参阅 [`docs/AGENT_EVOLUTION.md`](docs/AGENT_EVOLUTION.md) 获取更全面的使用示例。
 
 ---
 
-### PlanKimiAgent（阶段 2）- 高级规划
+## 基准测试：DA-Code 评估
 
-**文件**：[`plan_kimi_agent.py`](plan_kimi_agent.py)（654 行）
+我们使用 DA-Code（500 个数据分析任务）进行客观评估。使用 MinimalKimiAgent 的当前基准：
 
-添加了动态规划能力，具有持久化计划管理和自适应执行。
+**测试集结果**（59 个复杂任务）：29.7% 平均得分，20.3% 成功率（12/59 完成）
 
-**特性**：
-- **计划创建**：在任务开始时生成带有结构化步骤的 `plan.md`
-- **自适应执行**：根据中间结果调整计划
-- **计划持久化**：人类可读的 markdown 计划，带状态跟踪
-- **步骤管理**：动态创建、更新、跳过、完成、记录步骤
-- **扩展轮次**：30+ 轮容量，适用于复杂任务
-- **所有阶段 1 特性**：安全、日志记录、工作区隔离
+**表现良好的方面**：
+- 数据洞察提取（查询制定、结构化数据推理）
+- 简单统计分析
+- 文件 I/O 和基本数据操作
 
-**计划工具**：
-- `CreatePlan`：初始化结构化计划文件
-- `UpdatePlan`：根据执行进度修改计划
-- `ReadPlan`：查看当前计划状态
+**需要改进的方面**：
+- 可视化（matplotlib/seaborn 语法、图表配置）
+- 复杂任务的多步规划（8+ 步）
+- 初始方法失败时的错误恢复
 
-**使用场景**：复杂多步骤任务、需要计划可视化的场景、自适应工作流
+**学习方法**：项目强调诚实指标而非夸大宣传。基准分数为 Stages 2-4 的架构改进建立了起点。
 
-**示例计划文件**：
-```markdown
-# 任务：分析销售数据并创建可视化
-
-## 步骤
-- [x] 读取 sales_data.csv
-- [~] 计算区域统计数据
-- [ ] 创建 matplotlib 可视化
-- [ ] 保存到 output/sales_chart.png
-
-## 执行日志
-[2025-01-26 10:30] 步骤 1 完成 - 找到 1000 条记录
-[2025-01-26 10:32] 步骤 2 进行中 - 计算中...
-```
-
-**状态**：开发中，目标在 DA-Code 任务上达到 35% 平均得分
-
----
-
-### SimpleClaudeAgent - 参考架构
-
-**文件**：[`claude_agent_pseudocode.py`](claude_agent_pseudocode.py)（527 行）
-
-教育性实现，展示 Claude 的架构模式，不用于生产环境。
-
-**架构见解**：
-- **响应式循环**：无预规划，每轮动态决策
-- **系统提示驱动**：工作流由不断发展的系统提示控制
-- **待办短期记忆**：通过系统消息跟踪任务
-- **动态上下文构建**：每轮从历史构建上下文
-- **工具多样性**：ReadFile、WriteFile、BashCommand、TodoUpdate、SubAgent
-
-**ASCII 架构比较**（来自代码注释）：
-```
-传统:           Claude 风格:
-Plan()                 用户输入
-  ↓                        ↓
-Execute()              API 调用 + 动态上下文
-  ↓                        ↓
-Reflect()              响应（文本或工具调用）
-  ↓                        ↓
-Update Plan            执行工具（如需要）
-  ↓                        ↓
-Loop                   添加到历史 → 循环
-```
-
-**使用场景**：了解 Claude 代理内部结构、架构参考、教育目的
-
-**注意**：为清晰起见有意简化 - 缺少生产安全检查
-
-## 基准测试性能
-
-### DA-Code 测试集（59 个任务）
-
-在需要多步推理、数据操作、可视化和机器学习的复杂数据分析任务上的综合评估。
-
-| 难度 | 数量 | 平均得分 | 成功率 | 状态 |
-|------------|-------|-----------|--------------|--------|
-| **简单** (1-3 步) | 1 | 100% | 100% (1/1) | ✓ 完成 |
-| **中等** (4-7 步) | 14 | 57% | 57% (8/14) | 进行中 |
-| **困难** (8+ 步) | 44 | 18% | 7% (3/44) | 进行中 |
-| **总体** | **59** | **29.7%** | **20.3% (12/59)** | **基准** |
-
-### 按类别性能
-
-| 类别 | 任务数 | 平均得分 | 成功率 | 关键挑战 |
-|----------|-------|-----------|--------------|---------------|
-| 数据洞察 | 4 | 100% | 100% (4/4) | ✓ 已解决 |
-| 数据操作 | 9 | 11% | 0% (0/9) | 复杂 pandas |
-| 数据可视化 | 11 | 0% | 0% (0/11) | **主要差距** |
-| 机器学习 | 14 | 21% | 14% (2/14) | 模型选择 |
-| 统计分析 | 9 | 44% | 33% (3/9) | 进展良好 |
-| 自然语言处理 | 7 | 29% | 14% (1/7) | 文本处理 |
-| GCP 特定 | 5 | 40% | 40% (2/5) | 云计费 |
-
-### 关键见解
-
-1. **数据洞察卓越**：100% 成功率 (4/4 任务)
-   - 代理在查询制定和洞察提取方面表现出色
-   - 展示了对结构化问题的强大推理能力
-
-2. **可视化差距**：0% 成功率 (0/11 任务)
-   - 代理在 matplotlib/seaborn 语法方面存在困难
-   - 计划在阶段 2 添加可视化工具知识
-   - 将创建专门的可视化示例
-
-3. **困难任务挑战**：仅 7% 成功率 (3/44)
-   - 多步规划需要改进
-   - PlanKimiAgent（阶段 2）专门针对这一点
-   - 动态规划应改进任务分解
-
-4. **部分学分系统**：29.7% 平均得分 vs 20.3% 成功率
-   - 许多任务部分解决（某些步骤正确）
-   - 表明代理理解任务但执行失败
-   - 错误恢复是关键改进领域
+详细分析可在 `docs/baseline_report.md` 中找到。
 
 ## 项目结构
 
 ```
-agent_architecture/
-├── minimal_kimi_agent.py          # 阶段 1：生产代理（423 行）
-├── plan_kimi_agent.py              # 阶段 2：规划代理（654 行）
-├── claude_agent_pseudocode.py      # 参考：Claude 模式（527 行）
+claude_agent_replicate/
+├── minimal_kimi_agent.py          # Stage 1：响应式基础（423 行）
+├── dynamic_plan_agent.py          # Stage 2：系统提示词 + 动态上下文 + Todo（620 行）
+├── human_loop_agent.py            # Stage 3：Human-in-the-Loop（未来）
+├── claude_agent_pseudocode.py     # 参考：Claude 架构模式（527 行）
+├── test_dynamic_plan_agent.py     # Stage 2 测试
 │
-├── agent_workspace/                # 隔离执行环境
-│   ├── da-code/                    # DA-Code 基准测试（500 任务）
+├── agent_workspace/                # 隔离的执行环境
+│   ├── da-code/                    # DA-Code 基准测试（500 个任务）
 │   │   ├── da_code/
 │   │   │   ├── source/             # 任务数据文件（2.1GB，单独下载）
-│   │   │   ├── gold/               # 标准答案（59 任务）
-│   │   │   └── configs/eval/       # 训练/验证/测试分割
+│   │   │   ├── gold/               # 标准答案（59 个任务）
+│   │   │   └── configs/eval/       # 训练/验证/测试拆分
 │   │   └── da_agent/
 │   │       └── evaluators/         # 官方评估指标
-│   └── output_dir/                 # 代理执行输出
+│   └── output_dir/                 # Agent 执行输出
 │
 ├── test/                           # 评估框架
-│   ├── test_dacode.py              # 代理测试工具
+│   ├── test_dacode.py              # Agent 测试框架
 │   ├── evaluate_dacode_official.py # 官方 DA-Code 指标
 │   ├── dataset_tasks.json          # 测试集配置
-│   └── create_train_val_split.py   # 数据集分割生成
+│   └── create_train_val_split.py   # 数据集拆分生成
 │
 ├── docs/                           # 文档
-│   ├── ARCHITECTURE.md             # 技术深度分析
+│   ├── ARCHITECTURE.md             # 技术深度解析
 │   ├── dataset_split_report.md     # 数据集分析
 │   └── kimi_api.md                 # API 配置说明
 │
@@ -359,7 +391,7 @@ agent_architecture/
 │
 ├── logs/                           # 对话日志（gitignored）
 ├── CLAUDE.md                       # 详细技术参考
-├── README.md                       # 本文档
+├── README.md                       # 此文件
 ├── requirements.txt                # Python 依赖
 ├── LICENSE                         # MIT 许可证
 └── .env.example                    # 环境模板
@@ -367,17 +399,17 @@ agent_architecture/
 
 ## 运行评估
 
-该项目包含与官方 DA-Code 基准测试评估框架的集成。
+项目包含与官方 DA-Code 基准测试评估框架的集成。
 
-### 数据集分割
+### 数据集拆分
 
-| 数据集 | 任务数 | 配置文件 | 用途 |
-|---------|-------|-------------|---------|
-| **训练集** | 50 | `configs/eval/eval_train.jsonl` | 提示工程、策略开发 |
+| 数据集 | 任务数 | 配置文件 | 目的 |
+|--------|--------|----------|------|
+| **训练集** | 50 | `configs/eval/eval_train.jsonl` | 提示词工程、策略开发 |
 | **验证集** | 50 | `configs/eval/eval_val.jsonl` | 超参数调优、验证 |
-| **测试集** | 59 | `configs/eval/eval_baseline.jsonl` | 最终基准测试（报告指标） |
+| **测试集** | 59 | `configs/eval/eval_baseline.jsonl` | 最终基准（报告指标） |
 
-使用分层抽样创建分割，以平衡难度级别（seed=42 以确保可重现性）。
+使用分层抽样创建拆分，以平衡难度级别（seed=42 确保可重复性）。
 
 ### 运行测试
 
@@ -395,50 +427,34 @@ python test/evaluate_dacode_official.py --dataset train
 python test/evaluate_dacode_official.py --dataset val
 ```
 
-结果保存在 `logs/` 中，包含详细的 JSON 分析和每个任务的细分。
+结果保存在 `logs/` 中，包含详细的 JSON 分析和每个任务的细目分类。
 
-## 常见模式
+## 使用示例
 
-### 数据分析任务
+详细示例请参阅 [`docs/AGENT_EVOLUTION.md`](docs/AGENT_EVOLUTION.md)。
+
+### Stage 1: 简单任务
 ```python
 from minimal_kimi_agent import MinimalKimiAgent
 
 agent = MinimalKimiAgent()
-result = agent.run("""
-分析 CSV 文件 monthly_sales.csv：
-1. 加载并探索数据结构
-2. 计算每个地区的汇总统计
-3. 按收入识别前 3 名产品
-4. 将发现写入 analysis_report.txt
-""", max_turns=15)
+result = agent.run("分析 sales.csv 并计算各地区总销售额", max_turns=10)
 ```
 
-### 可视化任务
+### Stage 2: 复杂多步骤任务
 ```python
+from dynamic_plan_agent import MinimalKimiAgent  # 增强版！
+
 agent = MinimalKimiAgent()
 result = agent.run("""
-从 customer_data.csv 创建可视化：
-1. 读取 CSV 文件
-2. 创建显示按类别销售额的柱状图
-3. 添加适当的标签和标题
-4. 保存为 'sales_by_category.png'
-使用 matplotlib 或 seaborn。
-""", max_turns=15)
-```
+构建完整的数据分析流程：
+1. 加载并清理 customer_data.csv
+2. 执行探索性数据分析
+3. 创建 3 个可视化展示关键趋势
+4. 编写包含建议的执行摘要
+""", max_turns=25)
 
-### 机器学习任务
-```python
-from plan_kimi_agent import PlanKimiAgent  # 更适合复杂任务
-
-agent = PlanKimiAgent()
-result = agent.run("""
-构建分类模型：
-1. 加载 train.csv 和 test.csv
-2. 预处理数据（处理缺失值，编码类别）
-3. 训练随机森林分类器
-4. 在测试集上评估
-5. 将预测保存到 predictions.csv
-""", max_turns=30)
+# Agent 将自动创建和追踪 todo 列表
 ```
 
 ## 技术栈
@@ -448,124 +464,146 @@ result = agent.run("""
 - OpenAI Python SDK（用于 Kimi API 兼容性）
 - python-dotenv（环境管理）
 
-**代理能力**（在工作区中执行）：
+**Agent 能力**（在工作区中执行）：
 - **数据**：pandas、numpy
 - **可视化**：matplotlib、seaborn
 - **机器学习**：scikit-learn、xgboost
 - **测试**：pytest
 
 **API**：
-- Moonshot Kimi（主要，通过 OpenAI 兼容接口）
+- 月之暗面 Kimi（主要，通过 OpenAI 兼容接口）
 - Anthropic Claude（仅参考实现）
 
 ## 关键设计决策
 
-### 为什么选择 Moonshot Kimi API？
+### 为何选择系统提示词而非硬编码工作流？
 
-- **OpenAI 兼容性**：使用 OpenAI SDK 即插即用替代，轻松切换模型
-- **强大的多轮支持**：可靠处理 16+ 轮对话
-- **合理定价**：开发和测试成本效益高
-- **中国存在**：项目起源于中国，Kimi 有良好的本地支持
+**代码定义能力**（工具、记忆、上下文）
+**系统提示词定义行为**（决策逻辑、规划策略、执行模式）
 
-### 为什么采用工作区隔离？
+这种分离使得：
+- 无需更改代码即可调整 Agent 行为
+- 通过提示词工程实现快速迭代
+- 同一代码库支持简单和复杂任务
 
-所有代理操作限制在 `agent_workspace/` 内：
+### 为何采用动态上下文构建？
+
+传统方法：简单地将新消息追加到历史中
+Claude 方法：每次 API 调用时重建完整上下文
+
+**优势**：
+- 注入实时环境信息（时间、工作区状态）
+- 更新系统提示词以反映当前阶段
+- 添加进度追踪（todo 状态）
+- 保持 Agent 对其情境的感知
+
+**成本**：每次调用 +550 tokens，但任务完成率更高
+
+### 为何采用工作区隔离？
+
+所有 Agent 操作限制在 `agent_workspace/`：
 - **安全**：防止意外损坏项目文件
-- **清晰**：代理代码和执行环境之间的明确边界
+- **清晰**：Agent 代码和执行环境之间的明确边界
 - **测试**：运行之间易于清理和重置
 - **路径解析**：相对路径自动解析到工作区
 
-### 为什么选择 DA-Code 基准测试？
+## FAQ
 
-- **真实任务**：实际数据分析问题，非玩具示例
-- **全面性**：跨 7 个类别 500 个任务，难度各异
-- **官方指标**：标准化评估，公平比较
-- **挑战性**：29.7% 平均得分显示有很大改进空间
-- **教育性**：通过诚实评估学习什么有效，什么无效
+**问：我可以用 Claude 替代 Kimi 吗？**
 
-## 常见问题
-
-**问：我可以用 Claude 代替 Kimi 吗？**
-
-答：当然可以！`SimpleClaudeAgent` 展示了这种模式。要创建生产版本的 Claude 版本：
+答：可以！`SimpleClaudeAgent` 展示了模式。要创建生产级 Claude 版本：
 1. 用 Anthropic 的 `Anthropic` 客户端替换 `OpenAI` 客户端
 2. 调整消息格式（Claude 使用略有不同的格式）
 3. 保持相同的工具定义和执行逻辑
 
-**问：如何提高代理的性能？**
+**问：如何提高 Agent 的性能？**
 
 答：迭代开发方法：
-1. 从训练集开始（50 个任务），识别失败模式
-2. 优化系统提示和工具使用
-3. 在验证集上测试（50 个任务）以避免过拟合
-4. 在测试集上进行最终基准测试（59 个任务）
+1. 从训练集（50 个任务）开始，识别失败模式
+2. 优化系统提示词和工具使用
+3. 在验证集（50 个任务）上测试以避免过拟合
+4. 在测试集（59 个任务）上进行最终基准测试
 
-**问：为什么可视化准确率为 0%？**
+**问：为什么可视化准确率是 0%？**
 
-答：当前代理在 matplotlib 语法和绘图配置方面存在困难。计划改进：
-- 向系统提示添加可视化示例
-- 为常见绘图类型创建专门工具
-- 改进调试绘图代码的错误消息
+答：当前 Agent 在 matplotlib 语法和图表配置方面存在困难。计划改进：
+- 向系统提示词添加可视化示例
+- 为常见图表类型创建专用工具
+- 改进调试图表代码的错误消息
 
 **问：我可以添加自定义工具吗？**
 
-答：当然可以！请参阅代理文件中的 `_get_tools()` 方法：
-1. 定义工具模式（名称、描述、参数）
+答：当然！请参阅 Agent 文件中的 `_get_tools()` 方法：
+1. 定义工具架构（名称、描述、参数）
 2. 添加处理方法（例如，`_execute_new_tool()`）
-3. 在工具调度程序中注册
+3. 在工具调度器中注册
 
-**问：阶段 1 和阶段 2 有什么区别？**
+**问：MinimalKimiAgent 和 Dynamic Plan Agent 有什么区别？**
 
 答：
-- **阶段 1（最小）**：反应式执行，无显式规划，更轻量
-- **阶段 2（计划）**：主动规划，plan.md 持久化，自适应执行
+- **Stage 1 (Minimal)**：响应式 Agent，无规划指导，无任务记忆。适合简单任务。
+- **Stage 2 (Dynamic Plan)**：添加系统提示词（教"如何思考"）、动态上下文（环境感知）、Todo 追踪（任务记忆）。适合复杂多步骤任务。
 
-简单任务或速度重要时选择阶段 1。复杂多步问题时使用阶段 2。
+两者使用相同的类名（`MinimalKimiAgent`），便于迁移。
+
+**问：如何选择使用哪个 Stage？**
+
+答：
+- **1-2 步骤**：Stage 1（最小）
+- **3-7 步骤**：Stage 2（动态规划）
+- **8+ 步骤或需要人工监督**：Stage 3（未来，human-in-loop）
+
+**问：为什么从这个项目中移除战略-战术模式？**
+
+答：项目重点转向纯 Claude 架构复刻。战略-战术是一个偏离 Claude 方法的实验性模式。对于 Claude 风格的 Agent，系统提示词驱动的响应式架构才是核心模式。
 
 ## 开发路线图
 
-- [x] **阶段 1：最小代理**（完成）
-  - 核心工具调用机制
-  - 多轮对话支持
-  - 生产级安全和日志记录
-  - DA-Code 基准：29.7% 平均得分 / 20.3% 成功率
+项目遵循阶段性方法来理解和复刻 Claude Agent 架构：
 
-- [ ] **阶段 2：计划代理**（进行中）
-  - 具有 plan.md 持久化的动态规划
-  - 基于结果的自适应执行
-  - 目标：DA-Code 任务平均得分 35%+
-  - 改进的可视化能力
+- [x] **Stage 1：响应式基础**（已完成，2025-11-20）
+  - 实现 Claude 的响应式循环架构
+  - 工具调用与多轮对话
+  - 生产安全机制（工作区隔离、命令黑名单）
+  - DA-Code 基准测试的基线评估（29.7% 平均得分）
 
-- [ ] **阶段 3：记忆与学习**（计划中）
-  - 从成功任务模式中学习
-  - 基于历史的提示优化
+- [x] **Stage 2：动态规划 Agent**（已完成，2025-11-27）
+  - 系统工作流提示词（~400 tokens）
+  - 动态上下文构建（每回合重建）
+  - TodoUpdate 工具（任务追踪和进度可见性）
+  - 增强日志记录（todos + 回合计数）
+  - 同名类便于迁移
+
+- [ ] **Stage 3：Human-in-the-Loop**（计划中，2026 年 Q1）
+  - 关键决策确认（破坏性操作前请求批准）
+  - 交互式调试（错误时寻求指导）
+  - 中间结果展示（用户可以调整方向）
+  - 工具：AskUserConfirmation、RequestUserGuidance、ShowIntermediateResult
+
+- [ ] **Stage 4：记忆与学习**（未来）
+  - 从成功模式中学习
+  - 自动系统提示词优化
   - 工具使用模式识别
-  - 目标：50%+ 平均得分
-
-- [ ] **阶段 4：自动进化**（计划中）
-  - 自我评估和错误分析
-  - 多轮提示优化
-  - 自动工具知识扩展
-  - 目标：70%+ DA-Code 基准测试
+  - 跨任务知识转移
 
 ## 参考文献
 
 - **DA-Code 基准测试**：[arXiv:2410.07331](https://arxiv.org/abs/2410.07331) - "DA-Code: Agent Data Science Code Generation Benchmark"
-- **Claude 文档**：[Anthropic Docs](https://docs.anthropic.com) - 代理模式和工具使用
-- **Moonshot AI**：[平台](https://platform.moonshot.cn/) - Kimi API 文档
+- **Claude 文档**：[Anthropic Docs](https://docs.anthropic.com) - Agent 模式和工具使用
+- **月之暗面 AI**：[平台](https://platform.moonshot.cn/) - Kimi API 文档
 
 ## 许可证
 
-MIT 许可证 - 详见 [LICENSE](LICENSE) 文件。
+MIT 许可证 - 详情请参阅 [LICENSE](LICENSE) 文件。
 
 ## 致谢
 
-- DA-Code 基准测试团队提供的全面评估框架
-- Anthropic 提供的 Claude 代理架构见解
-- Moonshot AI 提供的 Kimi API 访问
+- DA-Code 基准测试团队提供的综合评估框架
+- Anthropic 提供的 Claude Agent 架构见解
+- 月之暗面 AI 提供的 Kimi API 访问
 
 ---
 
-**构建重点**：干净的架构、诚实的指标、持续改进
+**构建重点**：清洁架构、诚实指标、持续改进
 
-**最后更新**：2025-11-26
+**最后更新**：2025-11-27

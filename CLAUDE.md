@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Agent architecture research project studying various agent patterns using GCP Cloud Billing cost data combined with industrial implementation experience. Currently implements a staged development approach progressing from minimal viable agent to sophisticated capabilities.
+Claude Agent replication project implementing Claude Code's architecture patterns using Moonshot Kimi API. Demonstrates progressive enhancement from minimal agent (Stage 1) through system prompt-driven dynamic planning (Stage 2) to human-in-the-loop interaction (Stage 3, planned). Uses DA-Code benchmark for objective evaluation.
 
 ## Running the Agent
 
@@ -24,18 +24,28 @@ result = agent.run("Your task description", max_turns=20)
 
 ## Architecture
 
-### Two Implementations
+### Three Implementations
 
-**MinimalKimiAgent** (`minimal_kimi_agent.py`) - Production Stage 1
+**MinimalKimiAgent** (`minimal_kimi_agent.py`) - Stage 1: Responsive Foundation
 - Moonshot Kimi API via OpenAI-compatible client
 - Multi-turn conversation with full history
 - Three tools: ReadFile (10k char limit), WriteFile, RunCommand
 - Automatic conversation logging
+- Baseline: 29.7% DA-Code average score
+
+**DynamicPlanAgent** (`dynamic_plan_agent.py`) - Stage 2: System Prompt + Dynamic Context
+- Same class name `MinimalKimiAgent` for easy migration
+- System workflow prompt (~400 tokens) teaching "how to think"
+- Dynamic context building (rebuilds context every API call)
+- TodoUpdate tool for task tracking with visual progress
+- Enhanced logging with todos and turn count
+- +550 tokens/call but higher completion rate
 
 **SimpleClaudeAgent** (`claude_agent_pseudocode.py`) - Reference/Educational
 - Demonstrates Claude agent patterns (responsive loop, dynamic context)
 - Key architectural difference from traditional Plan→Execute→Reflect pattern
 - System Prompt-driven workflow with todo short-term memory
+- Not for production - educational purposes only
 
 ### Tool Execution Flow
 
@@ -91,9 +101,16 @@ Common pattern: pandas for data manipulation, matplotlib/seaborn for visualizati
 
 | Stage | Status | Focus |
 |-------|--------|-------|
-| 1 | Complete | Minimal Agent - tool calling, multi-turn, logging |
-| 2 | Planned | Plan Agent - adaptive planning based on history |
-| 3 | Planned | Memory & Learning - prompt-based optimization |
+| 1 | ✅ Complete (2025-11-20) | Minimal Agent - tool calling, multi-turn, logging |
+| 2 | ✅ Complete (2025-11-27) | Dynamic Plan - system prompt + context + todos |
+| 3 | 🔄 Planned (2026 Q1) | Human-in-Loop - key decision confirmation, interactive debugging |
+| 4 | 📋 Future | Memory & Learning - prompt-based optimization |
+
+**Key Files**:
+- `minimal_kimi_agent.py` - Stage 1 implementation
+- `dynamic_plan_agent.py` - Stage 2 implementation
+- `claude_agent_pseudocode.py` - Reference architecture
+- `docs/AGENT_EVOLUTION.md` - Detailed evolution guide
 
 ## Environment Configuration
 

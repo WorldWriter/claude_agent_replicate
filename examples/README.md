@@ -155,13 +155,13 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 ```
 
-**Use Plan Agent for Complex Tasks**:
+**Use Dynamic Plan Agent for Complex Tasks**:
 ```python
-# Replace MinimalKimiAgent with PlanKimiAgent
-from plan_kimi_agent import PlanKimiAgent
+# For complex multi-step tasks, use Stage 2
+from dynamic_plan_agent import MinimalKimiAgent
 
-agent = PlanKimiAgent()
-# Plan will be saved to agent_workspace/plan.md
+agent = MinimalKimiAgent()  # Same class name, enhanced behavior!
+# Agent will automatically create and track todos
 ```
 
 ## Expected Files After Running
@@ -189,4 +189,4 @@ After running these examples:
 
 ---
 
-**Note**: These examples use the Minimal Agent (Stage 1). For more complex multi-step tasks, consider using the Plan Agent (Stage 2) by importing `PlanKimiAgent` instead.
+**Note**: These examples use the Minimal Agent (Stage 1). For more complex multi-step tasks, consider using the Dynamic Plan Agent (Stage 2) by importing `MinimalKimiAgent` from `dynamic_plan_agent` instead. See [`docs/AGENT_EVOLUTION.md`](../docs/AGENT_EVOLUTION.md) for details.

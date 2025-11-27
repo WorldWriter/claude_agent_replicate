@@ -408,9 +408,9 @@ All agent file operations are isolated to `agent_workspace/` for safety and clar
 
 ```
 Project Root:
-/Users/user/agent_architecture/
-├── minimal_kimi_agent.py       ← Agent code (safe from agent)
-├── plan_kimi_agent.py          ← Agent code (safe from agent)
+/Users/user/claude_agent_replicate/
+├── minimal_kimi_agent.py       ← Stage 1: Agent code (safe from agent)
+├── dynamic_plan_agent.py       ← Stage 2: Agent code (safe from agent)
 ├── test/                        ← Test code (safe from agent)
 │
 └── agent_workspace/             ← AGENT OPERATES HERE ONLY
