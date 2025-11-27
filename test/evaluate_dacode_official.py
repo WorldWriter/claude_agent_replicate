@@ -42,7 +42,7 @@ def get_task_ids_legacy(mode):
 def get_task_ids(dataset):
     """获取任务ID列表"""
     config = load_dataset_config()
-    if dataset in ['train', 'val', 'test']:
+    if dataset in ['quick', 'train', 'val', 'test']:
         return config['datasets'][dataset]['task_ids']
     else:
         raise ValueError(f"未知的数据集: {dataset}")
@@ -102,12 +102,16 @@ def main():
     )
 
     # 新参数: --dataset (推荐使用)
-    parser.add_argument('--dataset', choices=['train', 'val', 'test'],
-                       help='数据集选择: train(50), val(50), test(59)')
+    parser.add_argument('--dataset', choices=['quick', 'train', 'val', 'test'],
+                       help='数据集选择: quick(5), train(50), val(50), test(59)')
 
     # 旧参数: --mode (向后兼容)
     parser.add_argument('--mode', choices=['quick', 'baseline'],
                        help='[已弃用] 使用 --dataset 代替。quick=5任务, baseline=test')
+
+    # 输出目录参数
+    parser.add_argument('--output-dir', type=str, default='output_dir',
+                       help='输出目录名称 (默认: output_dir, Dynamic Agent使用: output_dir_dynamic)')
 
     args = parser.parse_args()
 
@@ -134,6 +138,9 @@ def main():
         print(f"DA-Code 评估 - TEST 数据集 (默认)")
         print(f"{'='*60}\n")
 
+    # 构建输出目录完整路径
+    output_dir = os.path.join(PROJECT_ROOT, "agent_workspace", args.output_dir)
+
     # 获取或创建评估配置文件
     eval_json = get_eval_config_file(dataset)
     if eval_json is None:
@@ -142,11 +149,27 @@ def main():
     print(f"✓ 数据集: {dataset}")
     print(f"✓ 任务数: {len(task_ids)}")
     print(f"✓ 配置文件: {eval_json}")
+    print(f"✓ 输出目录: {output_dir}")
     print()
 
     # 运行评估
-    evaluator = Evaluator(output_dir=OUTPUT_DIR, gold_dir=GOLD_DIR, timeout_seconds=300)
-    results = evaluator.evaluate(env_config=eval_json)
+    evaluator = Evaluator(output_dir=output_dir, gold_dir=GOLD_DIR, timeout_seconds=300)
+    try:
+        results = evaluator.evaluate(env_config=eval_json)
+    except Exception as e:
+        print(f"评估过程中发生错误: {e}")
+        import traceback
+        traceback.print_exc()
+        results = []
+
+    # 检查是否有结果
+    if not results:
+        print(f"\n{'='*60}")
+        print(f"评估失败 - 没有成功评估的任务")
+        print(f"{'='*60}")
+        print(f"请检查输出目录结构和文件格式")
+        print(f"输出目录: {output_dir}")
+        return
 
     # 统计
     scores = [r['total_score'] for r in results]
@@ -175,7 +198,9 @@ def main():
     # 保存
     os.makedirs(LOGS_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    result_file = os.path.join(LOGS_DIR, f"dacode_eval_{dataset}_{timestamp}.json")
+    # 从输出目录名提取标识符
+    output_dir_name = args.output_dir.replace('output_dir', '').replace('_', '') or 'stage1'
+    result_file = os.path.join(LOGS_DIR, f"dacode_eval_{dataset}_{output_dir_name}_{timestamp}.json")
 
     with open(result_file, 'w') as f:
         json.dump({

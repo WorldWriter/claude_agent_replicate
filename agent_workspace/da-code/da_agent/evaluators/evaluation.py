@@ -57,12 +57,13 @@ class Evaluator:
         output_id_dir = os.path.join(self.output_dir, id)
 
         result_file = os.path.join(output_id_dir, 'dabench', 'result.json')
-        
-        # if not os.path.exists(result_file):
-            # print(f"File {result_file} not found")
-        #    return id, False, None, None
-        # trajectory_info = self._get_trajectory_info_from_json(result_file)
-       
+
+        # 尝试读取 trajectory_info，如果文件不存在则使用空字典
+        if os.path.exists(result_file):
+            trajectory_info = self._get_trajectory_info_from_json(result_file)
+        else:
+            trajectory_info = {}
+
         gold_id_dir = os.path.join(self.gold_dir, id)
         config = eval_config.get('config', {})
         hardness = config.get('hardness', "none")
@@ -72,18 +73,24 @@ class Evaluator:
             else [eval_config['result']]
 
         type, gold_results = self.get_result_file(expected, dir=gold_id_dir, isgold=True)
-        if type == 'number':
-            output_type = ['.txt', '.json', '.png', '.jpg', '.csv', '.npy']
-            output = trajectory_info["result"]
-            is_file = any(map(lambda x: output.endswith(x), output_type))
-            if not is_file:
-                output_results = [trajectory_info["result"]]
+
+        # 如果 trajectory_info 有 "result" 键，使用标准流程（DA-Code 官方 agent）
+        if "result" in trajectory_info:
+            if type == 'number':
+                output_type = ['.txt', '.json', '.png', '.jpg', '.csv', '.npy']
+                output = trajectory_info["result"]
+                is_file = any(map(lambda x: output.endswith(x), output_type))
+                if not is_file:
+                    output_results = [trajectory_info["result"]]
+                else:
+                    output_results = self._get_result_file_from_json(output_id_dir, trajectory_info["result"], is_plot=(config["task"] == "data visualization"))
             else:
                 output_results = self._get_result_file_from_json(output_id_dir, trajectory_info["result"], is_plot=(config["task"] == "data visualization"))
+                if len(output_results) != len(gold_results):
+                    _, output_results = self.get_result_file(expected, dir=output_id_dir, isgold=False)
         else:
-            output_results = self._get_result_file_from_json(output_id_dir, trajectory_info["result"], is_plot=(config["task"] == "data visualization"))
-            if len(output_results) != len(gold_results):
-                _, output_results = self.get_result_file(expected, dir=output_id_dir, isgold=False)
+            # 简化 agent 模式：直接从输出目录查找结果文件
+            _, output_results = self.get_result_file(expected, dir=output_id_dir, isgold=False)
         # import pdb; pdb.set_trace()
         # def is_path_exist(results: List):
         #     if len(results) == 0:

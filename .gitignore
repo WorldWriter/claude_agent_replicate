@@ -26,6 +26,7 @@ ENV/
 # Agent Workspace - Test Results (large data)
 agent_workspace/dacode_*/
 agent_workspace/output_dir/
+agent_workspace/output_dir_dynamic/
 
 # DA-Code Dataset - Source Data (2.1GB, too large for git)
 agent_workspace/da-code/da_code/source/

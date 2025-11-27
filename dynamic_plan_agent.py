@@ -14,7 +14,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 
-class MinimalKimiAgent:
+class DynamicPlanAgent:
     """极简 Kimi Agent - 只保留核心功能"""
 
     def __init__(self, api_key: str = None):
@@ -598,7 +598,7 @@ def example_simple():
     print("示例: 文件操作")
     print("="*60)
 
-    agent = MinimalKimiAgent()
+    agent = DynamicPlanAgent()
     result = agent.run("验证下 data/full_gcp_data.csv, 文件太大, 写个python脚本读下前100行. 统计下三列的数量是否一致, 即 Usage Quantity * Cost per Quantity ($) = Unrounded Cost ($), 可以统计下diff ,因为可能有小数点差异")
     print(f"\n最终结果: {result}")
 
@@ -609,7 +609,7 @@ def example_multi_step():
     print("示例: 多步骤任务")
     print("="*60)
 
-    agent = MinimalKimiAgent()
+    agent = DynamicPlanAgent()
     result = agent.run("""
     请完成以下任务:
     1. 找下当前的工作目录下有什么? 找到data/full_gcp_data.csv
@@ -626,12 +626,9 @@ def example_comprehensive_task():
     print("示例: 多步骤任务")
     print("="*60)
 
-    agent = MinimalKimiAgent()
+    agent = DynamicPlanAgent()
     result = agent.run("""
-    请完成以下任务:
-    1. 找下当前的工作目录下有什么? 找到data/full_gcp_data.csv
-    2. 写个python 脚本,并运行(当前已经有相关脚本, 可直接运行). 该脚本的功能是读取data/full_gcp_data.csv 文件, 并打印出文件的行数和列数.
-    3. 探索性分析2022年1月和2022年2月的各指标用量趋势, 并生成报告
+    请你帮我分析下工作目录下的data/full_gcp_data.csv, 探索性分析2022年1月和2022年2月的各指标用量趋势, 并生成报告
     """)
     print(f"\n最终结果: {result}")
 
@@ -642,7 +639,7 @@ def example_with_todo():
     print("示例: Todo任务追踪")
     print("="*60)
 
-    agent = MinimalKimiAgent()
+    agent = DynamicPlanAgent()
     result = agent.run("""
     完成以下数据分析任务:
     1. 读取 data/full_gcp_data.csv 文件(如果文件过大,使用Python脚本处理)

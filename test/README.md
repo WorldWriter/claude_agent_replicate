@@ -6,6 +6,21 @@
 - **evaluate_dacode.py** - 评估脚本，比较 Agent 输出与 Gold 标准答案
 - **baseline_tasks.json** - Baseline 59 个任务配置（基于 git clone 的 DA-Code 仓库）
 
+## dynamic_plan_agent 测试
+   快速测试（5个任务，默认模式）
+  python test/test_dacode_dynamic.py
+
+   指定模式
+  python test/test_dacode_dynamic.py --mode quick      # 5个任务
+  python test/test_dacode_dynamic.py --mode baseline   # 59个任务
+  python test/test_dacode_dynamic.py --mode all        # 所有任务
+
+   自定义最大轮次
+  python test/test_dacode_dynamic.py --max-turns 30
+
+   强制重新测试（忽略已有结果）
+  python test/test_dacode_dynamic.py --force
+
 ## 测试模式
 
 ### 1. Quick 模式 ⚡
@@ -15,6 +30,7 @@
 ```bash
 python test/test_dacode.py --mode quick
 ```
+
 
 **任务列表**:
 - `di-text-001` - Data Insight
