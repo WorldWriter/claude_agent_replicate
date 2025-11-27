@@ -50,3 +50,6 @@ build/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Claude Code Project Instructions (not tracked in git)
+CLAUDE.md
