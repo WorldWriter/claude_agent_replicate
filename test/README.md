@@ -2,24 +2,46 @@
 
 ## 文件说明
 
-- **test_dacode.py** - 主测试脚本，支持增量测试和多种模式
-- **evaluate_dacode.py** - 评估脚本，比较 Agent 输出与 Gold 标准答案
-- **baseline_tasks.json** - Baseline 59 个任务配置（基于 git clone 的 DA-Code 仓库）
+- **run_benchmark.py** - 单一脚本，支持 MinimalKimiAgent（Stage 1）与 DynamicPlanAgent（Stage 2）测试 & 评估
+- **dataset_tasks.json** - 完整数据集配置（quick/train/val/test），包含任务列表、难度分布、性能统计等元数据
 
-## dynamic_plan_agent 测试
-   快速测试（5个任务，默认模式）
-  python test/test_dacode_dynamic.py
+## 测试脚本（run_benchmark.py）
 
-   指定模式
-  python test/test_dacode_dynamic.py --mode quick      # 5个任务
-  python test/test_dacode_dynamic.py --mode baseline   # 59个任务
-  python test/test_dacode_dynamic.py --mode all        # 所有任务
+> 单一入口，通过 `--agent` 切换 Stage 1/Stage 2。评估请使用 `test/evaluate_results.py`。
 
-   自定义最大轮次
-  python test/test_dacode_dynamic.py --max-turns 30
+### 运行测试
+  python test/run_benchmark.py --mode quick             # 快速测试（5个任务）
+  python test/run_benchmark.py --mode baseline          # 59 个任务
+  python test/run_benchmark.py --mode all               # 所有任务
+  python test/run_benchmark.py --max-turns 30           # 自定义最大轮次
+  python test/run_benchmark.py --force                  # 强制重新测试
 
-   强制重新测试（忽略已有结果）
-  python test/test_dacode_dynamic.py --force
+### 切换 Agent
+  python test/run_benchmark.py --agent minimal --mode baseline   # Stage 1 Baseline
+  python test/run_benchmark.py --agent minimal --mode quick      # Stage 1 快速测试
+  python test/run_benchmark.py --agent dynamic --mode all        # Stage 2 全量
+
+
+### 官方评估脚本
+  # Dynamic Agent 输出目录：output_dir_dynamic
+  python test/evaluate_results.py --dataset quick --output-dir output_dir_dynamic
+  python test/evaluate_results.py --dataset test --output-dir output_dir_dynamic   # baseline/all
+
+### 常用参数
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--agent` | `dynamic` | `dynamic`=Stage 2 DynamicPlanAgent，`minimal`=Stage 1 MinimalKimiAgent |
+| `--mode` | `quick` | 任务子集：quick / baseline / all |
+| `--max-turns` | 依 agent 自动设置 | 可手动覆盖（如 30） |
+| `--force` | False | 忽略历史记录，强制重新跑任务 |
+
+### Agent 对比
+| Agent | 默认轮次 | 工作目录根路径 | 日志前缀 |
+|-------|----------|----------------|----------|
+| `dynamic` | 20 | `agent_workspace/output_dir_dynamic/{task_id}` | `dacode_dynamic` |
+| `minimal` | 15 | `agent_workspace/dacode_{task_id}/` | `dacode_test` |
+
+> 提示：不同 Agent 共享同一脚本，彼此不会覆盖对方日志。Dynamic Agent 产生的输出位于 `agent_workspace/output_dir_dynamic/{task_id}`，可直接用于官方评估脚本。
 
 ## 测试模式
 
@@ -50,6 +72,8 @@ python test/test_dacode.py --mode quick
 - CI/CD 自动化测试的 smoke test
 - 演示 Agent 基本能力
 
+> 默认由 Stage 2 Dynamic Agent 执行。如需比较 Stage 1，可附加 `--agent minimal`。
+
 ### 2. Baseline 模式（默认）
 
 测试 **59 个** baseline 任务（git clone 时包含的 gold 任务）
@@ -70,6 +94,8 @@ python test/test_dacode.py --mode baseline
 - 完整验证 Agent 改进效果
 - 准备技术报告的标准测试集
 - 不需要下载完整数据集（2.1GB）
+
+> Baseline 模式常用于对比不同 agent：`--agent minimal`（Stage 1 基线） vs `--agent dynamic`（Stage 2 改进）。
 
 ### 3. All 模式
 
@@ -98,7 +124,7 @@ python test/test_dacode.py --mode all
 ## 命令行参数
 
 ```bash
-python test/test_dacode.py [OPTIONS]
+python test/run_benchmark.py [OPTIONS]
 
 Options:
   --mode {quick,baseline,all}  测试模式 (默认: baseline)
@@ -114,26 +140,26 @@ Options:
 
 ```bash
 # 1. 快速测试（5个任务，推荐用于开发调试）
-python test/test_dacode.py --mode quick
+python test/run_benchmark.py --mode quick
 
 # 2. 默认 baseline 测试（59个任务）
-python test/test_dacode.py
-python test/test_dacode.py --mode baseline
+python test/run_benchmark.py
+python test/run_benchmark.py --mode baseline
 
 # 3. 强制重新运行（忽略已有结果）
-python test/test_dacode.py --mode quick --force
+python test/run_benchmark.py --mode quick --force
 
 # 4. 增加最大轮次到 20
-python test/test_dacode.py --mode quick --max-turns 20
+python test/run_benchmark.py --mode quick --max-turns 20
 
 # 5. 测试所有任务（需要完整数据集）
-python test/test_dacode.py --mode all
+python test/run_benchmark.py --mode all
 
 # 6. All 模式 + 最大轮次 25
-python test/test_dacode.py --mode all --max-turns 25
+python test/run_benchmark.py --mode all --max-turns 25
 
 # 7. 强制重跑 baseline 全部任务
-python test/test_dacode.py --mode baseline --force
+python test/run_benchmark.py --mode baseline --force
 ```
 
 ### 模式对比
@@ -155,10 +181,10 @@ python test/test_dacode.py --mode baseline --force
 **示例**:
 ```bash
 # 第一次运行：测试 59 个任务中的 30 个
-python test/test_dacode.py --mode baseline
+python test/run_benchmark.py --mode baseline
 
 # 第二次运行：自动跳过已测试的 30 个，测试剩余 29 个
-python test/test_dacode.py --mode baseline
+python test/run_benchmark.py --mode baseline
 ```
 
 ### 强制重新运行
@@ -167,10 +193,10 @@ python test/test_dacode.py --mode baseline
 
 ```bash
 # 强制重跑 Quick 测试（5个任务）
-python test/test_dacode.py --mode quick --force
+python test/run_benchmark.py --mode quick --force
 
 # 强制重跑 Baseline 测试（59个任务）
-python test/test_dacode.py --mode baseline --force
+python test/run_benchmark.py --mode baseline --force
 ```
 
 **适用场景**:
@@ -181,31 +207,38 @@ python test/test_dacode.py --mode baseline --force
 
 ## 评估结果
 
-测试完成后，运行评估脚本：
+测试完成后，使用官方脚本 `test/evaluate_results.py` 对输出目录进行评估：
 
 ```bash
-python test/evaluate_dacode.py
+# Quick 模式 (5 个任务)
+python test/evaluate_results.py --dataset quick --output-dir output_dir_dynamic
+
+# Baseline / All 模式 (59 个测试集任务)
+python test/evaluate_results.py --dataset test --output-dir output_dir_dynamic
 ```
 
-评估脚本会：
-1. 自动使用最新的测试结果文件
-2. 比较 Agent 输出与 Gold 标准答案
-3. 输出详细的评估报告
+> `--output-dir` 需要与运行测试时的输出目录名称保持一致（默认 Dynamic Agent 为 `output_dir_dynamic`）。
+
+官方评估脚本会：
+1. 加载指定数据集对应的评估配置
+2. 对比输出目录中的结果与 Gold 标准答案
+3. 给出平均得分、完成率和每个任务的详细得分，并将结果写入 `logs/dacode_eval_{dataset}_{outputDir}_{timestamp}.json`
 
 ## 输出文件
 
 ### 测试结果
 
-保存在 `logs/` 目录：
+保存在 `logs/` 目录（`log_prefix` 取决于 agent，例如 dynamic= `dacode_dynamic`，minimal=`dacode_test`）：
 
-- `dacode_test_{timestamp}.json` - 本次新测试的结果
-- `dacode_test_merged_{timestamp}.json` - 合并后的完整结果
+- `{log_prefix}_{timestamp}.json` - 本次新测试的结果
+- `{log_prefix}_merged_{timestamp}.json` - 合并后的完整结果
 
 ### 工作目录
 
-每个任务的执行目录：`agent_workspace/dacode_{task_id}/`
+- Dynamic Agent: `agent_workspace/output_dir_dynamic/{task_id}/`
+- Minimal Agent: `agent_workspace/dacode_{task_id}/`
 
-**注意**: 工作目录已在 `.gitignore` 中排除，不会提交到 git。
+**注意**: 这些目录已在 `.gitignore` 中排除，不会提交到 git。
 
 ## Baseline 任务列表（59个）
 

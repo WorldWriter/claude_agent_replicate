@@ -64,6 +64,14 @@ class Evaluator:
         else:
             trajectory_info = {}
 
+        # 兼容简化 agent：如果缺少轨迹信息，则填充默认值，仅依赖最终结果文件
+        trajectory_info.setdefault("finished", True)
+        trajectory_info.setdefault("steps", 0)
+        trajectory_info.setdefault("result", "")
+        trajectory_info.setdefault("added_files", [])
+        trajectory_info.setdefault("changed_files", [])
+        trajectory_info.setdefault("actions", [])
+
         gold_id_dir = os.path.join(self.gold_dir, id)
         config = eval_config.get('config', {})
         hardness = config.get('hardness', "none")
@@ -228,7 +236,7 @@ class Evaluator:
             task_type = config.get('task')
             hardness = config.get('hardness')
             result_type = config.get('type')
-            if trajectory_info["finished"] == False:
+            if not trajectory_info.get("finished", True):
                 # print(f"Task {id} is not finished!")
                 eval_results.append({"id": id, "task":task_type,"result_type":result_type, "hardness":hardness, "total_score": 0.0, **trajectory_info})
                 continue
@@ -261,7 +269,7 @@ class Evaluator:
                             result['file'] = [os.path.basename(file) for file in output_result]
                             info.append(result)
                         else:
-                            scores.append(result)
+                            scores.append(result if isinstance(result, (int, float)) else 0.0)
             except Exception as e:
                 # output_result = output_result if isinstance(output_result, list) else [output_result]
                 logging.error(f"Error in task {id}: {e}")

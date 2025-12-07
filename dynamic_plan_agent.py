@@ -46,6 +46,11 @@ class DynamicPlanAgent:
         self.workspace = "agent_workspace"
         os.makedirs(self.workspace, exist_ok=True)
 
+        # 上下文提炼配置
+        self.MESSAGE_COUNT_TRIGGER = 24  # 约12轮对话后触发提炼
+        self.KEEP_RECENT_MESSAGES = 10   # 保留最近10条消息完整
+        self.SUMMARY_MIN_LENGTH = 200    # 只摘要超过200字符的tool result
+
     # ============================================
     # 动态上下文构建机制
     # ============================================
@@ -104,7 +109,7 @@ class DynamicPlanAgent:
 2. **Todo任务管理**
    - 对于复杂任务(3步以上),使用 TodoUpdate 创建和追踪任务
    - 始终保持恰好一个任务处于 "in_progress" 状态
-   - 完成任务后立即标记为 "completed"
+   - **完成任务时提供执行结果**: 使用 result 参数简要说明关键结果
    - 任务状态: "pending" | "in_progress" | "completed"
 
 3. **思考模型**
@@ -156,9 +161,14 @@ class DynamicPlanAgent:
                 "in_progress": "[→]",
                 "completed": "[✓]"
             }[task["status"]]
-            todo_lines.append(f"{status_icon} {task['id']}: {task['description']}")
+            # Show task with result if available
+            task_line = f"{status_icon} {task['id']}: {task['description']}"
+            if task.get("result"):
+                task_line += f" → {task['result']}"
+            todo_lines.append(task_line)
 
         todo_lines.append("\n提醒: 使用 TodoUpdate 工具更新任务状态!")
+        todo_lines.append("完成任务时，建议提供 result 参数说明执行结果!")
         todo_lines.append("</todo_memory>")
 
         return "\n".join(todo_lines)
@@ -210,6 +220,10 @@ class DynamicPlanAgent:
     def _call_kimi(self) -> Any:
         """调用 Kimi API (使用动态上下文)"""
         try:
+            # 智能提炼上下文（如果需要）
+            if self._should_refine_context():
+                self._refine_context()
+
             # 构建动态消息上下文并保存
             full_messages = self._build_dynamic_messages()
             self.full_messages_history = full_messages
@@ -357,6 +371,10 @@ class DynamicPlanAgent:
                                 "type": "string",
                                 "enum": ["pending", "in_progress", "completed"],
                                 "description": "任务状态"
+                            },
+                            "result": {
+                                "type": "string",
+                                "description": "任务执行结果 (完成任务时建议提供)。简要说明执行的关键结果，帮助后续决策。例如：'成功读取150行数据'、'脚本执行成功，生成图表trend.png'、'发现5个异常值'"
                             }
                         },
                         "required": ["action"]
@@ -470,7 +488,7 @@ class DynamicPlanAgent:
                 return f"⚠️  命令执行失败 (退出码: {result.returncode})\n\n{output}"
 
         except subprocess.TimeoutExpired:
-            return "❌ 命令执行超时 (超过60秒)"
+            return "❌ 命令执行超时 (超过200秒)"
         except Exception as e:
             return f"❌ 命令执行失败: {str(e)}"
 
@@ -502,10 +520,15 @@ class DynamicPlanAgent:
         elif action == "complete":
             # 完成任务
             task_id = params["task_id"]
+            result = params.get("result", "")  # Get optional result
             for task in self.todos["tasks"]:
                 if task["id"] == task_id:
                     task["status"] = "completed"
-                    return f"✓ 任务 {task_id} 已完成"
+                    if result:
+                        task["result"] = result  # Store result
+                        return f"✓ 任务 {task_id} 已完成\n执行结果: {result}"
+                    else:
+                        return f"✓ 任务 {task_id} 已完成"
             return f"❌ 未找到任务: {task_id}"
 
         return "❌ 未知操作"
@@ -586,6 +609,146 @@ class DynamicPlanAgent:
             print(f"\n📝 对话日志已保存: {log_file} + {json_file}")
         except Exception as e:
             print(f"\n⚠️  日志保存失败: {e}")
+
+    # ============================================
+    # 智能上下文提炼系统
+    # ============================================
+
+    def _should_refine_context(self) -> bool:
+        """检查是否需要提炼上下文"""
+        return len(self.messages) >= self.MESSAGE_COUNT_TRIGGER
+
+    def _refine_context(self):
+        """
+        智能提炼上下文 - 只摘要tool results
+
+        保留：
+        - 所有 user messages
+        - 所有 assistant messages（包括tool_calls）
+        - 最近KEEP_RECENT_MESSAGES条消息（完整保留）
+
+        提炼：
+        - 旧的 tool results → LLM智能摘要
+        """
+        if len(self.messages) < self.MESSAGE_COUNT_TRIGGER:
+            return
+
+        print(f"\n{'='*60}")
+        print(f"🔍 智能提炼上下文")
+        print(f"{'='*60}")
+
+        # 计算提炼边界
+        refine_boundary = len(self.messages) - self.KEEP_RECENT_MESSAGES
+
+        # 收集需要摘要的tool results
+        to_summarize = []
+        for i in range(refine_boundary):
+            msg = self.messages[i]
+
+            # 只处理tool消息，且未被摘要过，且长度超过阈值
+            if (msg['role'] == 'tool' and
+                not msg.get('_summarized') and
+                len(msg['content']) > self.SUMMARY_MIN_LENGTH):
+
+                to_summarize.append((i, msg['content']))
+
+        if not to_summarize:
+            print("无需摘要的tool结果")
+            print(f"{'='*60}\n")
+            return
+
+        print(f"发现 {len(to_summarize)} 个需要摘要的tool结果")
+
+        # 批量摘要
+        for i, original_content in to_summarize:
+            try:
+                summary = self._summarize_tool_result(original_content)
+
+                # 替换内容
+                self.messages[i]['content'] = summary
+                self.messages[i]['_summarized'] = True
+                self.messages[i]['_original_length'] = len(original_content)
+
+                print(f"  ✓ 已摘要: {len(original_content)} → {len(summary)} 字符")
+
+            except Exception as e:
+                print(f"  ⚠️  摘要失败，保留原内容: {e}")
+                continue
+
+        print(f"{'='*60}\n")
+
+    def _summarize_tool_result(self, tool_result: str) -> str:
+        """
+        使用LLM智能摘要tool result
+
+        目标：保留关键信息，提炼重点
+        - 文件类型和结构
+        - 前几行样本数据
+        - 关键特征和发现
+        - 执行状态（成功/失败）
+        """
+        # 摘要提示词
+        summary_prompt = f"""请智能提炼以下工具执行结果的关键信息。
+
+要求：
+1. **保留重点，去除冗余** - 不是简单压缩，而是提炼关键信息
+2. **结构化输出** - 使用清晰的格式展示关键点
+3. **保留样本** - 如果是数据/文件，包含前几行样本
+4. **突出特征** - 总结数据/输出的关键特征
+
+针对不同类型：
+- **ReadFile**: 文件类型、列/字段结构、前3-5行样本、数据特征（时间范围、主要内容等）
+- **RunCommand**: 执行状态、关键输出行、错误信息（如有）、最终结果
+- **WriteFile**: 文件路径、内容大小、写入状态
+
+输出格式示例：
+```
+文件类型: CSV (4列×150行)
+内容: 2022年1-2月GCP用量数据
+列结构: [date, metric_name, value, unit]
+前3行样本:
+  - 2022-01-01, compute_engine_cpu_hours, 1234.5
+  - 2022-01-01, cloud_storage_gb, 500.2
+  - 2022-01-02, compute_engine_cpu_hours, 1189.3
+关键特征: 覆盖60天，主要指标CPU和存储
+```
+
+工具执行结果:
+{tool_result[:2000]}{'...' if len(tool_result) > 2000 else ''}
+
+智能摘要:"""
+
+        # 调用LLM API
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,  # 使用same model确保一致性
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "你是一个数据分析助手，擅长提炼关键信息，保留重要特征和样本。"
+                    },
+                    {
+                        "role": "user",
+                        "content": summary_prompt
+                    }
+                ],
+                temperature=0.3,  # 稍低温度，确保一致性
+                max_tokens=500    # 限制摘要长度
+            )
+
+            summary = response.choices[0].message.content.strip()
+
+            # 添加摘要标记
+            return f"[智能摘要] {summary}"
+
+        except Exception as e:
+            # 失败时返回简化版（首尾保留）
+            print(f"LLM摘要失败: {e}")
+            lines = tool_result.split('\n')
+            first_lines = '\n'.join(lines[:3])
+            last_lines = '\n'.join(lines[-2:]) if len(lines) > 5 else ""
+            fallback = f"{first_lines}\n...\n{last_lines}" if last_lines else first_lines
+            return f"[摘要失败，保留首尾] {fallback}"
 
 
 # ============================================

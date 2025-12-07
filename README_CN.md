@@ -254,8 +254,8 @@ claude_agent_replicate/
 │   └── kimi_api.md                # API 配置说明
 │
 ├── test/                          # DA-Code 评估框架
-│   ├── evaluate_dacode_official.py
-│   ├── test_dacode.py
+│   ├── evaluate_results.py
+│   ├── run_benchmark.py
 │   └── dataset_tasks.json
 │
 ├── examples/                      # 使用演示
@@ -374,10 +374,10 @@ claude_agent_replicate/
 │   └── output_dir/                 # Agent 执行输出
 │
 ├── test/                           # 评估框架
-│   ├── test_dacode.py              # Agent 测试框架
-│   ├── evaluate_dacode_official.py # 官方 DA-Code 指标
+│   ├── run_benchmark.py              # Agent 测试框架
+│   ├── evaluate_results.py # 官方 DA-Code 指标
 │   ├── dataset_tasks.json          # 测试集配置
-│   └── create_train_val_split.py   # 数据集拆分生成
+│   └── setup_datasets.py   # 数据集拆分生成
 │
 ├── docs/                           # 文档
 │   ├── ARCHITECTURE.md             # 技术深度解析
@@ -415,16 +415,16 @@ claude_agent_replicate/
 
 ```bash
 # 快速验证（5 个代表性任务，约 5 分钟）
-python test/evaluate_dacode_official.py --dataset quick
+python test/evaluate_results.py --dataset quick
 
 # 完整测试集（59 个任务，约 1.5-2 小时）
-python test/evaluate_dacode_official.py --dataset test
+python test/evaluate_results.py --dataset test
 
 # 训练集（50 个任务，用于开发）
-python test/evaluate_dacode_official.py --dataset train
+python test/evaluate_results.py --dataset train
 
 # 验证集（50 个任务，用于调优）
-python test/evaluate_dacode_official.py --dataset val
+python test/evaluate_results.py --dataset val
 ```
 
 结果保存在 `logs/` 中，包含详细的 JSON 分析和每个任务的细目分类。

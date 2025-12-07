@@ -325,17 +325,17 @@
   },
 
   "usage": {
-    "quick_test": "python test/evaluate_dacode_official.py --mode quick",
-    "train_eval": "python test/evaluate_dacode_official.py --dataset train",
-    "val_eval": "python test/evaluate_dacode_official.py --dataset val",
-    "test_eval": "python test/evaluate_dacode_official.py --dataset test",
-    "regenerate": "python test/create_train_val_split.py"
+    "quick_test": "python test/evaluate_results.py --mode quick",
+    "train_eval": "python test/evaluate_results.py --dataset train",
+    "val_eval": "python test/evaluate_results.py --dataset val",
+    "test_eval": "python test/evaluate_results.py --dataset test",
+    "regenerate": "python test/setup_datasets.py"
   },
 
   "files": {
     "this_file": "test/dataset_tasks.json",
-    "split_script": "test/create_train_val_split.py",
-    "eval_script": "test/evaluate_dacode_official.py",
+    "split_script": "test/setup_datasets.py",
+    "eval_script": "test/evaluate_results.py",
     "detailed_report": "docs/dataset_split_report.md",
     "train_config": "agent_workspace/da-code/da_code/configs/eval/eval_train.jsonl",
     "val_config": "agent_workspace/da-code/da_code/configs/eval/eval_val.jsonl",

@@ -184,7 +184,7 @@ After running these examples:
 
 1. **Review Logs**: Check `logs/` to see how the agent reasoned through tasks
 2. **Try Custom Tasks**: Modify examples with your own data analysis tasks
-3. **Run Benchmark**: Test against DA-Code: `python test/evaluate_dacode_official.py --dataset quick`
+3. **Run Benchmark**: Test against DA-Code: `python test/evaluate_results.py --dataset quick`
 4. **Read Architecture**: Understand how it works: [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md)
 
 ---

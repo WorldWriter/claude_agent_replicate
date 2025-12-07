@@ -254,8 +254,8 @@ claude_agent_replicate/
 │   └── kimi_api.md                # API configuration notes
 │
 ├── test/                          # DA-Code evaluation framework
-│   ├── evaluate_dacode_official.py
-│   ├── test_dacode.py
+│   ├── evaluate_results.py
+│   ├── run_benchmark.py
 │   └── dataset_tasks.json
 │
 ├── examples/                      # Usage demos
@@ -362,10 +362,10 @@ Detailed breakdown: [`docs/baseline_report.md`](docs/baseline_report.md)
 
 ```bash
 # 5 representative tasks (~5 minutes)
-python test/evaluate_dacode_official.py --dataset quick
+python test/evaluate_results.py --dataset quick
 
 # Full test set (59 tasks, ~1.5-2 hours)
-python test/evaluate_dacode_official.py --dataset test
+python test/evaluate_results.py --dataset test
 ```
 
 ---

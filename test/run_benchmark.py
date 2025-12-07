@@ -1,6 +1,5 @@
 """
-DA-Code Benchmark 测试脚本 - Dynamic Plan Agent
-使用 DynamicPlanAgent (Stage 2) 测试 DA-Code 数据集
+DA-Code Benchmark 测试脚本（支持 Minimal & Dynamic Agent）
 支持增量测试：自动发现所有任务，跳过已测试任务
 
 测试模式:
@@ -17,9 +16,10 @@ import glob
 import argparse
 from datetime import datetime
 
-# 添加父目录到路径以导入 dynamic_plan_agent
+# 添加父目录到路径以导入 agent
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dynamic_plan_agent import DynamicPlanAgent
+from minimal_kimi_agent import MinimalKimiAgent
 
 # 路径配置 (相对于项目根目录)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -27,10 +27,30 @@ DA_CODE_DIR = os.path.join(PROJECT_ROOT, "agent_workspace/da-code/da_code")
 SOURCE_DIR = os.path.join(DA_CODE_DIR, "source")
 GOLD_DIR = os.path.join(DA_CODE_DIR, "gold")
 CONFIG_FILE = os.path.join(DA_CODE_DIR, "configs/task/all.jsonl")
-WORKSPACE = os.path.join(PROJECT_ROOT, "agent_workspace")
+WORKSPACE_ROOT = os.path.join(PROJECT_ROOT, "agent_workspace")
 LOGS_DIR = os.path.join(PROJECT_ROOT, "logs")
-OUTPUT_DIR = os.path.join(PROJECT_ROOT, "agent_workspace/output_dir_dynamic")
-BASELINE_TASKS_FILE = os.path.join(os.path.dirname(__file__), "baseline_tasks.json")
+DATASET_TASKS_FILE = os.path.join(os.path.dirname(__file__), "dataset_tasks.json")
+
+AGENT_CONFIGS = {
+    "dynamic": {
+        "name": "Dynamic Plan Agent (Stage 2)",
+        "cls": DynamicPlanAgent,
+        "default_max_turns": 20,
+        "workspace_root": os.path.join(PROJECT_ROOT, "agent_workspace/output_dir_dynamic"),
+        "workspace_pattern": "{task_id}",
+        "log_prefix": "dacode_dynamic",
+        "eval_output_dir": "output_dir_dynamic",
+    },
+    "minimal": {
+        "name": "MinimalKimiAgent (Stage 1)",
+        "cls": MinimalKimiAgent,
+        "default_max_turns": 15,
+        "workspace_root": WORKSPACE_ROOT,
+        "workspace_pattern": "dacode_{task_id}",
+        "log_prefix": "dacode_test",
+        "eval_output_dir": None,
+    },
+}
 
 
 def load_baseline_tasks(mode: str = 'baseline') -> list:
@@ -40,17 +60,17 @@ def load_baseline_tasks(mode: str = 'baseline') -> list:
     Args:
         mode: 'baseline' (59个任务) 或 'quick' (5个任务)
     """
-    if not os.path.exists(BASELINE_TASKS_FILE):
-        print(f"警告: Baseline 任务配置文件不存在: {BASELINE_TASKS_FILE}")
+    if not os.path.exists(DATASET_TASKS_FILE):
+        print(f"警告: 数据集配置文件不存在: {DATASET_TASKS_FILE}")
         return []
 
-    with open(BASELINE_TASKS_FILE, 'r', encoding='utf-8') as f:
+    with open(DATASET_TASKS_FILE, 'r', encoding='utf-8') as f:
         config = json.load(f)
 
         if mode == 'quick':
-            return config.get("quick_test_5_tasks", [])
+            return config['datasets']['quick']['task_ids']
         else:  # baseline
-            return config.get("baseline_59_tasks", [])
+            return config['datasets']['test']['task_ids']
 
 
 def discover_all_tasks() -> list:
@@ -64,15 +84,18 @@ def discover_all_tasks() -> list:
     return tasks
 
 
-def load_previous_results() -> dict:
+def load_previous_results(log_prefix: str) -> dict:
     """加载之前的测试结果，返回 {task_id: result} 字典"""
     previous_results = {}
 
     if not os.path.exists(LOGS_DIR):
         return previous_results
 
-    # 查找所有 Dynamic Plan Agent 测试结果文件
-    result_files = glob.glob(os.path.join(LOGS_DIR, "dacode_dynamic_*.json"))
+    pattern = os.path.join(LOGS_DIR, f"{log_prefix}_*.json")
+    result_files = [
+        f for f in glob.glob(pattern)
+        if "_merged_" not in os.path.basename(f)
+    ]
 
     if not result_files:
         return previous_results
@@ -110,15 +133,27 @@ def load_task_config(task_id: str) -> dict:
     return None
 
 
-def prepare_workspace(task_id: str) -> str:
+def get_agent_config(agent_name: str) -> dict:
+    if agent_name not in AGENT_CONFIGS:
+        raise ValueError(f"未知 agent: {agent_name}")
+    return AGENT_CONFIGS[agent_name]
+
+
+def build_workspace_path(agent_name: str, task_id: str) -> str:
+    cfg = get_agent_config(agent_name)
+    workspace_name = cfg["workspace_pattern"].format(task_id=task_id)
+    return os.path.join(cfg["workspace_root"], workspace_name)
+
+
+def prepare_workspace(task_id: str, agent_name: str) -> str:
     """准备工作目录，复制数据文件到输出目录"""
     source_path = os.path.join(SOURCE_DIR, task_id)
-    # 直接使用 output_dir_dynamic/{task_id} 作为工作目录
-    task_workspace = os.path.join(OUTPUT_DIR, task_id)
+    task_workspace = build_workspace_path(agent_name, task_id)
 
     # 清理并创建工作目录
     if os.path.exists(task_workspace):
         shutil.rmtree(task_workspace)
+    os.makedirs(os.path.dirname(task_workspace), exist_ok=True)
     shutil.copytree(source_path, task_workspace)
 
     return task_workspace
@@ -166,7 +201,7 @@ def build_prompt(task_config: dict, task_workspace: str) -> str:
     return prompt
 
 
-def run_test(task_id: str, max_turns: int = 20) -> dict:
+def run_test(task_id: str, agent_name: str, max_turns: int) -> dict:
     """运行单个测试"""
     print(f"\n{'='*60}")
     print(f"测试任务: {task_id}")
@@ -182,16 +217,18 @@ def run_test(task_id: str, max_turns: int = 20) -> dict:
         }
 
     # 准备工作目录
-    task_workspace = prepare_workspace(task_id)
+    task_workspace = prepare_workspace(task_id, agent_name)
 
     # 构建提示词
     prompt = build_prompt(task_config, task_workspace)
 
-    # 创建 Agent 并运行 (使用 DynamicPlanAgent)
-    agent = DynamicPlanAgent()
+    # 创建 Agent 并运行
+    agent_cls = get_agent_config(agent_name)["cls"]
+    agent = agent_cls()
     # 临时修改工作目录
-    original_workspace = agent.workspace
-    agent.workspace = task_workspace
+    original_workspace = getattr(agent, "workspace", None)
+    if hasattr(agent, "workspace"):
+        agent.workspace = task_workspace
 
     try:
         result = agent.run(prompt, max_turns=max_turns)
@@ -200,7 +237,8 @@ def run_test(task_id: str, max_turns: int = 20) -> dict:
         result = str(e)
         status = "error"
     finally:
-        agent.workspace = original_workspace
+        if hasattr(agent, "workspace"):
+            agent.workspace = original_workspace
 
     return {
         "task_id": task_id,
@@ -213,9 +251,17 @@ def run_test(task_id: str, max_turns: int = 20) -> dict:
 
 
 def main():
-    """主函数 - 增量测试模式"""
-    # 解析命令行参数
-    parser = argparse.ArgumentParser(description='DA-Code Benchmark 测试脚本 - Dynamic Plan Agent')
+    """主函数 - 多 Agent 测试入口"""
+    parser = argparse.ArgumentParser(
+        description='DA-Code Benchmark - 多 Agent 测试脚本'
+    )
+    parser.add_argument(
+        '--agent',
+        type=str,
+        default='dynamic',
+        choices=sorted(AGENT_CONFIGS.keys()),
+        help='选择执行 Agent: dynamic=Dynamic Plan Agent | minimal=MinimalKimiAgent'
+    )
     parser.add_argument(
         '--mode',
         type=str,
@@ -226,8 +272,7 @@ def main():
     parser.add_argument(
         '--max-turns',
         type=int,
-        default=20,
-        help='每个任务的最大轮次 (默认: 20, 比 Stage 1 的 15 更多)'
+        help='每个任务的最大轮次 (默认: 根据 agent 选择自动设置)'
     )
     parser.add_argument(
         '--force',
@@ -236,20 +281,34 @@ def main():
     )
     args = parser.parse_args()
 
+    agent_cfg = get_agent_config(args.agent)
+    log_prefix = agent_cfg["log_prefix"]
+
+    max_turns = args.max_turns or agent_cfg["default_max_turns"]
+    dataset_map = {'quick': 'quick', 'baseline': 'test', 'all': 'test'}
+    eval_dataset = dataset_map.get(args.mode, 'test')
+    eval_output_dir = agent_cfg.get("eval_output_dir")
+    eval_command = None
+    if eval_output_dir:
+        eval_command = f"python test/evaluate_results.py --dataset {eval_dataset} --output-dir {eval_output_dir}"
+
     print("=" * 60)
-    print(f"DA-Code Benchmark 测试 - Dynamic Plan Agent - {args.mode.upper()} 模式")
+    print(f"DA-Code Benchmark 测试 - {agent_cfg['name']} - {args.mode.upper()} 模式")
     print("=" * 60)
+    print(f"Agent: {args.agent}")
+    print(f"日志前缀: {log_prefix}")
+    print(f"最大轮次: {max_turns}")
 
     # 1. 根据模式选择任务列表
     if args.mode == 'quick':
         all_tasks = load_baseline_tasks(mode='quick')
         print(f"\n模式: 快速测试（每类任务各1个）")
-        print(f"任务来源: {BASELINE_TASKS_FILE}")
+        print(f"任务来源: {DATASET_TASKS_FILE}")
         print(f"预期准确率: 100% (5/5) - 这5个任务在Stage 1测试中全部成功")
     elif args.mode == 'baseline':
         all_tasks = load_baseline_tasks(mode='baseline')
         print(f"\n模式: Baseline 测试")
-        print(f"任务来源: {BASELINE_TASKS_FILE}")
+        print(f"任务来源: {DATASET_TASKS_FILE}")
         print(f"Stage 1 Baseline 准确率: 23.7% (14/59)")
     else:  # all
         all_tasks = discover_all_tasks()
@@ -263,7 +322,7 @@ def main():
         print(f"\n⚠️  强制模式: 将重新运行所有任务（忽略已有结果）")
         previous_results = {}
     else:
-        previous_results = load_previous_results()
+        previous_results = load_previous_results(log_prefix)
         print(f"已测试任务数: {len(previous_results)}")
 
     # 3. 获取需要测试的任务
@@ -272,6 +331,12 @@ def main():
 
     if not tasks_to_test:
         print("\n所有任务都已测试完成！")
+        print("=" * 60)
+        if eval_command:
+            print(f"提示: 请运行官方评估脚本:")
+            print(f"  {eval_command}")
+        else:
+            print("提示: 请使用 test/evaluate_results.py 对输出目录进行评估。")
         print("=" * 60)
         return
 
@@ -289,7 +354,7 @@ def main():
     for i, task_id in enumerate(tasks_to_test, 1):
         print(f"\n[{i}/{len(tasks_to_test)}] 开始测试 {task_id}")
 
-        result = run_test(task_id, max_turns=args.max_turns)
+        result = run_test(task_id, agent_name=args.agent, max_turns=max_turns)
         new_results.append(result)
 
         print(f"状态: {result['status']}")
@@ -302,18 +367,18 @@ def main():
     os.makedirs(LOGS_DIR, exist_ok=True)
 
     # 保存本次新增的测试结果
-    new_result_file = os.path.join(LOGS_DIR, f"dacode_dynamic_{timestamp}.json")
+    new_result_file = os.path.join(LOGS_DIR, f"{log_prefix}_{timestamp}.json")
     with open(new_result_file, 'w', encoding='utf-8') as f:
         json.dump(new_results, f, ensure_ascii=False, indent=2)
 
     # 保存完整的合并结果
-    merged_result_file = os.path.join(LOGS_DIR, f"dacode_dynamic_merged_{timestamp}.json")
+    merged_result_file = os.path.join(LOGS_DIR, f"{log_prefix}_merged_{timestamp}.json")
     with open(merged_result_file, 'w', encoding='utf-8') as f:
         json.dump(all_results, f, ensure_ascii=False, indent=2)
 
     # 7. 打印摘要
     print("\n" + "=" * 60)
-    print("测试摘要 - Dynamic Plan Agent")
+    print(f"测试摘要 - {agent_cfg['name']}")
     print("=" * 60)
 
     # 本次测试摘要
@@ -335,11 +400,14 @@ def main():
         print(f"  {status_icon} {r['task_id']} ({r.get('hardness', 'N/A')})")
 
     print("\n" + "=" * 60)
-    print("测试完成 - Dynamic Plan Agent")
+    print(f"测试完成 - {agent_cfg['name']}")
     print("=" * 60)
-    print(f"输出目录: {OUTPUT_DIR}")
-    print(f"\n下一步: 运行评估脚本查看结果")
-    print(f"  python test/evaluate_dacode_official.py --dataset {args.mode}")
+    print(f"输出目录根路径: {agent_cfg['workspace_root']}")
+    if eval_command:
+        print("\n下一步: 运行官方评估脚本")
+        print(f"  {eval_command}")
+    else:
+        print("\n下一步: 请根据 README 使用 test/evaluate_results.py 进行评估")
     print("=" * 60)
 
 

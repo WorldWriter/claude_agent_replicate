@@ -238,15 +238,15 @@ test/dataset_tasks.json  # 包含所有数据集的任务ID、统计信息和元
 
 ```bash
 # 运行训练集评估（开发阶段）
-python test/evaluate_dacode_official.py --dataset train
+python test/evaluate_results.py --dataset train
 
 # 运行验证集评估（验证改进）
-python test/evaluate_dacode_official.py --dataset val
+python test/evaluate_results.py --dataset val
 
 # 运行测试集评估（最终benchmark）
-python test/evaluate_dacode_official.py --dataset test
+python test/evaluate_results.py --dataset test
 # 或
-python test/evaluate_dacode_official.py  # 默认使用test
+python test/evaluate_results.py  # 默认使用test
 ```
 
 ### 8.3 重新生成数据集
@@ -255,11 +255,11 @@ python test/evaluate_dacode_official.py  # 默认使用test
 
 ```bash
 # 编辑参数
-vim test/create_train_val_split.py
+vim test/setup_datasets.py
 # 修改 RANDOM_SEED, TRAIN_SIZE, VAL_SIZE, TARGET_DIFFICULTY_DIST
 
 # 重新运行
-python test/create_train_val_split.py
+python test/setup_datasets.py
 ```
 
 ---
@@ -319,10 +319,10 @@ python test/create_train_val_split.py
 - DA-Code论文: [https://arxiv.org/abs/xxx](需补充)
 - 数据集下载: Google Drive (2.1GB)
 - Baseline报告: `docs/baseline_report_20251120.md`
-- 评估代码: `test/evaluate_dacode_official.py`
+- 评估代码: `test/evaluate_results.py`
 
 ---
 
-**报告生成**: `test/create_train_val_split.py`
+**报告生成**: `test/setup_datasets.py`
 **最后更新**: 2025-11-22
 **版本**: v1.0
