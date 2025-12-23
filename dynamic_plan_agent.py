@@ -17,8 +17,14 @@ from dotenv import load_dotenv
 class DynamicPlanAgent:
     """极简 Kimi Agent - 只保留核心功能"""
 
-    def __init__(self, api_key: str = None):
-        """初始化 Agent"""
+    def __init__(self, api_key: str = None, depth: int = 0, max_depth: int = 3):
+        """初始化 Agent
+
+        Args:
+            api_key: Kimi API密钥
+            depth: 当前递归深度 (0为根Agent)
+            max_depth: 最大递归深度限制
+        """
         load_dotenv()
 
         # 初始化 Kimi API 客户端
@@ -26,6 +32,10 @@ class DynamicPlanAgent:
             api_key=api_key or os.getenv("MOONSHOT_API_KEY"),
             base_url="https://api.moonshot.ai/v1"
         )
+
+        # 递归深度控制（新增）
+        self.depth = depth
+        self.max_depth = max_depth
 
         # 消息历史
         self.messages: List[Dict] = []
@@ -42,8 +52,12 @@ class DynamicPlanAgent:
         # 模型配置
         self.model = os.getenv("LLM_MODEL", "kimi-k2-turbo-preview")
 
-        # 工作目录
-        self.workspace = "agent_workspace"
+        # 工作目录（根据深度调整）
+        if depth > 0:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.workspace = f"agent_workspace/output_dir_{timestamp}_depth{depth}"
+        else:
+            self.workspace = "agent_workspace"
         os.makedirs(self.workspace, exist_ok=True)
 
         # 上下文提炼配置
@@ -105,6 +119,7 @@ class DynamicPlanAgent:
    - 使用 ReadFile 在处理前先了解数据结构
    - 使用 RunCommand 执行Python脚本进行复杂分析
    - 使用 WriteFile 保存结果和生成的代码
+   - 使用 SubAgent 处理独立子任务(需要上下文隔离时)
 
 2. **Todo任务管理**
    - 对于复杂任务(3步以上),使用 TodoUpdate 创建和追踪任务
@@ -136,7 +151,28 @@ class DynamicPlanAgent:
 **ReadFile**: 预览数据结构和内容(截断到1000字符)
 **WriteFile**: 保存生成的脚本、结果、报告
 **RunCommand**: 执行Python脚本、数据处理命令
-**TodoUpdate**: 追踪多步骤工作流的任务进度"""
+**TodoUpdate**: 追踪多步骤工作流的任务进度
+**SubAgent**: 隔离处理独立子任务
+
+## SubAgent使用场景
+
+1. **上下文隔离需求**
+   - 子任务会产生大量中间信息,污染主任务上下文
+   - 需要独立的错误处理(失败不影响主流程)
+   - 示例: 分析多个文件时,每个文件用SubAgent独立处理
+
+2. **何时使用SubAgent vs 直接执行**
+   - 使用SubAgent: 独立、可失败、有完整工作流的子任务
+   - 直接执行: 简单工具调用、需要在主上下文中的操作
+
+3. **注意事项**
+   - SubAgent有递归深度限制(当前: {self.depth}/{self.max_depth})
+   - SubAgent只返回最终结果,中间过程不可见
+   - 成本考虑: SubAgent会增加API调用次数
+
+示例:
+- ✓ 好的使用: "用SubAgent分析文件A的数据分布"
+- ✗ 不好的使用: "用SubAgent读取文件内容"(直接用ReadFile即可)"""
 
     def _generate_system_reminder_start(self) -> str:
         """生成动态环境上下文"""
@@ -144,8 +180,9 @@ class DynamicPlanAgent:
 当前环境:
 - 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 - 工作空间: {os.path.abspath(self.workspace)}
+- 递归深度: {self.depth}/{self.max_depth}
 - 回合: {self._current_turn}
-- 可用工具: ReadFile, WriteFile, RunCommand, TodoUpdate
+- 可用工具: ReadFile, WriteFile, RunCommand, TodoUpdate, SubAgent
 </system_context>"""
 
     def _generate_system_reminder_end(self) -> str:
@@ -380,6 +417,39 @@ class DynamicPlanAgent:
                         "required": ["action"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "SubAgent",
+                    "description": f"""启动子Agent处理独立子任务(上下文隔离)。
+
+使用场景:
+1. 需要隔离处理的独立子任务(避免污染主任务上下文)
+2. 需要独立错误处理的任务(失败不影响主流程)
+3. 批量处理多个独立文件/数据集
+
+注意:
+- SubAgent有独立的messages历史和todos
+- SubAgent只返回最终输出字符串
+- 当前递归深度: {self.depth}/{self.max_depth}
+- 达到最大深度时无法创建SubAgent""",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task": {
+                                "type": "string",
+                                "description": "子任务描述。应该是完整、独立的任务说明，SubAgent将基于此独立执行"
+                            },
+                            "max_turns": {
+                                "type": "integer",
+                                "description": "子Agent最大回合数，默认10。复杂任务可设置更高值",
+                                "default": 10
+                            }
+                        },
+                        "required": ["task"]
+                    }
+                }
             }
         ]
 
@@ -394,6 +464,8 @@ class DynamicPlanAgent:
                 return self._tool_run_command(tool_args["command"])
             elif tool_name == "TodoUpdate":
                 return self._tool_todo_update(tool_args)
+            elif tool_name == "SubAgent":
+                return self._tool_sub_agent(tool_args)
             else:
                 return f"错误: 未知工具 {tool_name}"
         except Exception as e:
@@ -533,6 +605,72 @@ class DynamicPlanAgent:
 
         return "❌ 未知操作"
 
+    def _tool_sub_agent(self, params: Dict) -> str:
+        """
+        SubAgent工具 - 上下文隔离的子任务执行
+
+        创建新的Agent实例,完全独立的上下文:
+        - 独立的messages历史
+        - 独立的todos
+        - 独立的turn counter
+        - 只返回最终结果字符串
+
+        Args:
+            params: {
+                "task": str,          # 子任务描述
+                "max_turns": int      # 最大回合数,默认10
+            }
+
+        Returns:
+            子Agent的最终输出结果
+        """
+        task = params["task"]
+        max_turns = params.get("max_turns", 10)
+
+        # 检查递归深度限制
+        if self.depth >= self.max_depth:
+            return f"""❌ SubAgent创建失败: 已达到最大递归深度限制 ({self.depth}/{self.max_depth})
+
+建议:
+1. 当前任务应在主Agent中完成
+2. 或者简化任务分解策略
+3. 如确需更深递归,请在初始化时增加max_depth参数"""
+
+        print(f"\n{'  ' * self.depth}┌─ 启动SubAgent (深度 {self.depth + 1}/{self.max_depth})")
+        print(f"{'  ' * self.depth}│  任务: {task[:80]}{'...' if len(task) > 80 else ''}")
+        print(f"{'  ' * self.depth}│  最大回合: {max_turns}")
+
+        try:
+            # 创建SubAgent实例 (递增depth)
+            sub_agent = DynamicPlanAgent(
+                api_key=self.client.api_key,
+                depth=self.depth + 1,
+                max_depth=self.max_depth
+            )
+
+            # 执行子任务
+            result = sub_agent.run(task, max_turns=max_turns)
+
+            print(f"{'  ' * self.depth}└─ SubAgent完成 ✓")
+
+            return f"""[SubAgent 执行结果]
+任务: {task}
+深度: {self.depth + 1}
+状态: 成功完成
+
+结果:
+{result}"""
+
+        except Exception as e:
+            error_msg = f"""❌ SubAgent执行失败 (深度 {self.depth + 1})
+任务: {task}
+错误: {str(e)}
+
+建议: 检查任务描述是否清晰、SubAgent权限是否足够"""
+
+            print(f"{'  ' * self.depth}└─ SubAgent失败 ✗: {str(e)}")
+            return error_msg
+
     def _get_final_output(self) -> str:
         """获取最终输出"""
         for msg in reversed(self.messages):
@@ -546,14 +684,19 @@ class DynamicPlanAgent:
             # 创建 logs 目录
             os.makedirs("logs", exist_ok=True)
 
-            # 生成文件名（按时间）
+            # 生成文件名（按时间，添加深度后缀）
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            log_file = f"logs/{timestamp}.txt"
+            if self.depth > 0:
+                log_file = f"logs/{timestamp}_subagent_depth{self.depth}.txt"
+            else:
+                log_file = f"logs/{timestamp}.txt"
 
             # 格式化对话内容
             log_content = []
             log_content.append("=" * 60)
             log_content.append(f"对话日志 - {timestamp}")
+            if self.depth > 0:
+                log_content.append(f"SubAgent深度: {self.depth}/{self.max_depth}")
             log_content.append("=" * 60)
             log_content.append("")
 
@@ -594,14 +737,16 @@ class DynamicPlanAgent:
             with open(log_file, 'w', encoding='utf-8') as f:
                 f.write("\n".join(log_content))
 
-            # 写入json文件（原始消息 + Todo状态 + 完整上下文）
+            # 写入json文件（原始消息 + Todo状态 + 完整上下文 + 深度信息）
             json_file = log_file.replace('.txt', '.json')
             log_data = {
                 "messages": self.messages,
                 "todos": self.todos,
                 "timestamp": timestamp,
                 "turns": len(self.messages),
-                "full_context": self.full_messages_history  # 只加这一行
+                "depth": self.depth,                # 新增
+                "max_depth": self.max_depth,        # 新增
+                "full_context": self.full_messages_history
             }
             with open(json_file, 'w', encoding='utf-8') as f:
                 json.dump(log_data, f, ensure_ascii=False, indent=2, default=str)

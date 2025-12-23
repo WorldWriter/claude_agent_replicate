@@ -176,36 +176,62 @@ Analyze customer_data.csv:
 
 ---
 
-### Stage 3: Human-in-Loop Agent (Planned)
+### Stage 3: SubAgent Pattern (Context Isolation)
 
-**File**: `human_loop_agent.py` (Future)
-**Status**: 🔄 Planned (Q1 2026)
+**File**: [`dynamic_plan_agent.py`](dynamic_plan_agent.py) (Extended from Stage 2)
+**Status**: ✅ Complete (2025-12-17)
 
-**Planned Features**:
+**Key Innovation**: SubAgent tool for context isolation and recursive task decomposition
 
-**1. Key Decision Confirmation**
-- Agent requests approval before destructive operations
-- User can review and modify execution plan
+**What's New**:
 
-**2. Interactive Debugging**
-- When errors occur, agent explains issue and asks for guidance
-- User can provide hints or alternative approaches
+**1. SubAgent Tool**
+- Creates independent agent instances for subtasks
+- Complete context isolation (separate messages, todos, turn counter)
+- Recursion depth control (`depth` and `max_depth` parameters)
+- Only returns final result (intermediate steps hidden from parent)
 
-**3. Tools**:
-- `AskUserConfirmation(operation, context)` → yes/no/modify
-- `RequestUserGuidance(problem, options)` → user choice
-- `ShowIntermediateResult(result, next_step)` → continue/adjust
+**2. Use Cases**:
+- **Context Isolation**: Subtasks generating large intermediate outputs
+- **Independent Error Handling**: Failures don't affect main workflow
+- **Parallel Exploration**: Analyzing multiple files/datasets independently
 
-**Example Flow**:
-```python
-# Agent: About to delete 500 files
-AskUserConfirmation(operation="delete_files", context={...})
-# User approves → Agent proceeds
+**3. Recursion Safety**:
+- Default `max_depth=3` prevents runaway recursion
+- Clear error messages when depth limit reached
+- Visual depth indicators in logs
 
-# Agent: Script failed with ModuleNotFoundError
-RequestUserGuidance(problem="Missing pandas", options=[...])
-# User: "Install pandas" → Agent runs pip install
+**Architecture**:
 ```
+Main Agent (depth=0)
+    ├── SubAgent A (depth=1) - Isolated context
+    │   └── SubAgent A1 (depth=2) - Further isolation
+    └── SubAgent B (depth=1) - Independent context
+```
+
+**Example**:
+```python
+from dynamic_plan_agent import DynamicPlanAgent
+
+agent = DynamicPlanAgent(max_depth=3)
+result = agent.run("""
+Analyze 3 CSV files in parallel:
+1. sales_2023.csv
+2. sales_2024.csv
+3. sales_2025.csv
+
+Use SubAgent for each file to:
+- Calculate total revenue
+- Identify top product
+- Return summary
+
+Then aggregate results in main agent.
+""", max_turns=20)
+```
+
+**Tool List**: ReadFile, WriteFile, RunCommand, TodoUpdate, **SubAgent** ⭐
+
+**Performance**: Each SubAgent incurs additional API calls. Best for tasks needing isolation, not simple operations.
 
 ---
 

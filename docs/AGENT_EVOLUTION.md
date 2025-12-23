@@ -219,110 +219,227 @@ result = agent.run("Complex task...")  # Now with System Prompt + Todo
 
 ---
 
-## Stage 3: Human-in-Loop Agent (Planned)
+## Stage 3: SubAgent Pattern (Context Isolation)
 
-**File**: `human_loop_agent.py` (Future)
-**Status**: 🔄 Planned (Q1 2026)
+**File**: `dynamic_plan_agent.py` (Extended from Stage 2)
+**Status**: ✅ Complete (2025-12-17)
+**Size**: ~900 lines (+150 lines from Stage 2)
 
 ### Motivation
 
-- **Trust**: Critical decisions need human oversight
-- **Error Recovery**: Human guidance speeds up debugging
-- **Transparency**: Users want visibility into agent reasoning
-- **Safety**: Prevent destructive operations without confirmation
+Stage 2 handles complex tasks well, but struggles with:
+- **Context Pollution**: Subtasks generating massive intermediate outputs clutter main context
+- **Parallel Analysis**: Need to analyze multiple independent files/datasets
+- **Error Isolation**: Subtask failures shouldn't abort the entire workflow
+- **Token Efficiency**: Long contexts waste tokens on irrelevant information
 
-### Planned Features
+**Solution**: SubAgent pattern - spawn independent agent instances for isolated subtask execution.
 
-#### 1. Key Decision Confirmation
+### Key Innovation: SubAgent Tool
 
-**Trigger**: Before destructive or irreversible operations
+#### 1. Complete Context Isolation
 
-**Tool**: `AskUserConfirmation(operation: str, context: dict) → yes/no/modify`
+**Mechanism**: Create new `DynamicPlanAgent` instance with incremented depth
 
-**Example**:
-```
-Agent: About to delete 500 files matching "*.tmp"
-AskUserConfirmation(
-    operation="delete_files",
-    context={"pattern": "*.tmp", "count": 500, "size": "2.3GB"}
+```python
+# Parent Agent (depth=0)
+parent = DynamicPlanAgent(depth=0, max_depth=3)
+
+# SubAgent (depth=1) - completely independent
+sub_agent = DynamicPlanAgent(
+    api_key=parent.client.api_key,
+    depth=parent.depth + 1,
+    max_depth=parent.max_depth
 )
-User: yes → Agent proceeds
-User: no → Agent skips operation
-User: modify → Agent asks for new pattern
 ```
 
-#### 2. Interactive Debugging
+**Isolated State**:
+- `messages[]` - Independent conversation history
+- `todos` - Separate task tracking
+- `_current_turn` - Independent turn counter
+- `workspace` - Timestamped subdirectory (depth > 0)
 
-**Trigger**: When errors occur or agent is uncertain
+#### 2. Recursion Depth Control
 
-**Tool**: `RequestUserGuidance(problem: str, options: list) → user_choice`
-
-**Example**:
-```
-Agent: Python script failed with "ModuleNotFoundError: pandas"
-RequestUserGuidance(
-    problem="Missing pandas library",
-    options=[
-        "Install pandas using pip",
-        "Rewrite code without pandas",
-        "Skip this step"
-    ]
-)
-User: Install pandas → Agent runs pip install
+**Safety Mechanism**:
+```python
+if self.depth >= self.max_depth:
+    return "❌ SubAgent创建失败: 已达到最大递归深度限制"
 ```
 
-#### 3. Intermediate Result Review
+**Default Limits**:
+- `max_depth=3` (configurable at initialization)
+- Visual depth indicators: `┌─ 启动SubAgent (深度 1/3)`
+- Workspace isolation: `output_dir_{timestamp}_depth{N}/`
 
-**Trigger**: After major steps in long-running tasks
+#### 3. Tool Definition
 
-**Tool**: `ShowIntermediateResult(result: str, next_step: str) → continue/adjust`
+```python
+{
+    "name": "SubAgent",
+    "description": f"""启动子Agent处理独立子任务(上下文隔离)。
 
-**Example**:
-```
-Agent: Completed data analysis, found 5 anomalies
-ShowIntermediateResult(
-    result="Anomaly summary: ...",
-    next_step="Generate visualization of anomalies"
-)
-User: continue → Agent proceeds
-User: adjust → Agent asks how to modify
-```
+使用场景:
+1. 需要隔离处理的独立子任务(避免污染主任务上下文)
+2. 需要独立错误处理的任务(失败不影响主流程)
+3. 批量处理多个独立文件/数据集
 
-### Architecture Pattern
-
-```
-User Input
-    ↓
-Dynamic Context Building (from Stage 2)
-    ↓
-API Call
-    ↓
-Decision Point:
-  - If critical_operation → AskUserConfirmation → Wait
-  - If error_occurred → RequestUserGuidance → Adjust
-  - If major_milestone → ShowIntermediateResult → Review
-    ↓
-Tool Execution
-    ↓
-Loop
+注意:
+- SubAgent有独立的messages历史和todos
+- SubAgent只返回最终输出字符串
+- 当前递归深度: {self.depth}/{self.max_depth}
+- 达到最大深度时无法创建SubAgent""",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task": {"type": "string", "description": "子任务描述"},
+            "max_turns": {"type": "integer", "default": 10}
+        },
+        "required": ["task"]
+    }
+}
 ```
 
-### Implementation Considerations
+### Implementation Changes
 
-**Async Communication**:
-- Agent pauses execution, waits for user input
-- Timeout mechanism (e.g., 5 minutes)
-- Queue system for multi-user scenarios
+**7 Core Modifications**:
 
-**State Management**:
-- Save agent state before confirmation request
-- Resume from exact point after user response
-- Handle "cancel" scenario gracefully
+1. **`__init__()`**: Add `depth` and `max_depth` parameters
+2. **Workspace Logic**: Depth-based directory creation
+3. **System Workflow Prompt**: SubAgent usage guidance (+100 tokens)
+4. **Environment Context**: Show recursion depth info
+5. **Tool Definition**: SubAgent tool in `_get_tools()`
+6. **Tool Execution**: Route to `_tool_sub_agent()`
+7. **Logging**: Depth info in filenames and JSON
 
-**User Experience**:
-- Clear, concise prompts
-- Provide context for decisions
-- Offer sensible default options
+**`_tool_sub_agent()` Implementation**:
+```python
+def _tool_sub_agent(self, params: Dict) -> str:
+    task = params["task"]
+    max_turns = params.get("max_turns", 10)
+
+    # Depth check
+    if self.depth >= self.max_depth:
+        return "❌ 已达到最大递归深度限制"
+
+    # Create isolated SubAgent
+    sub_agent = DynamicPlanAgent(
+        api_key=self.client.api_key,
+        depth=self.depth + 1,
+        max_depth=self.max_depth
+    )
+
+    # Execute independently
+    result = sub_agent.run(task, max_turns=max_turns)
+
+    # Return only final result
+    return f"[SubAgent 执行结果]\n任务: {task}\n结果: {result}"
+```
+
+### Usage Examples
+
+#### Example 1: Multi-File Analysis
+```python
+agent = DynamicPlanAgent(max_depth=2)
+result = agent.run("""
+Analyze sales_2023.csv, sales_2024.csv, sales_2025.csv
+
+For each file, use SubAgent to:
+- Calculate total revenue
+- Identify top 5 products
+- Find monthly trends
+
+Then aggregate all results in main agent.
+""", max_turns=30)
+```
+
+**Execution Flow**:
+```
+Main Agent (depth=0)
+  ├─ SubAgent A (depth=1): Analyze sales_2023.csv
+  │    → Returns: "Total: $1.2M, Top: Product X, Trend: +15%"
+  ├─ SubAgent B (depth=1): Analyze sales_2024.csv
+  │    → Returns: "Total: $1.5M, Top: Product Y, Trend: +25%"
+  └─ SubAgent C (depth=1): Analyze sales_2025.csv
+       → Returns: "Total: $1.8M, Top: Product Z, Trend: +20%"
+
+Main Agent aggregates: "3-year growth: 50%, average trend: +20%"
+```
+
+#### Example 2: Recursion Depth Test
+```python
+agent = DynamicPlanAgent(max_depth=2)
+result = agent.run("""
+Test recursion limits:
+1. Main Agent creates SubAgent A (depth 1)
+2. SubAgent A creates SubAgent B (depth 2)
+3. SubAgent B tries to create SubAgent C (depth 3) - should fail
+""", max_turns=15)
+```
+
+### Architecture Comparison
+
+**Stage 2 → Stage 3**:
+
+```
+Stage 2: Single Agent                 Stage 3: Multi-Agent Hierarchy
+├── messages[]                         Root Agent (depth=0)
+├── todos                                ├── messages[] (isolated)
+└── tools                                ├── todos (isolated)
+    ├── ReadFile                         ├── tools
+    ├── WriteFile                        │   ├── ReadFile
+    ├── RunCommand                       │   ├── WriteFile
+    └── TodoUpdate                       │   ├── RunCommand
+                                         │   ├── TodoUpdate
+                                         │   └── SubAgent ← NEW
+                                         ├── SubAgent A (depth=1)
+                                         │   └── [isolated context]
+                                         └── SubAgent B (depth=1)
+                                             └── [isolated context]
+```
+
+### Performance Characteristics
+
+**Token Usage**:
+- Root Agent: ~700 tokens/call (+100 for SubAgent tool definition)
+- Each SubAgent: ~600 tokens/call
+- 3 SubAgents × 5 turns = 15 additional API calls
+
+**Cost Implications** (Kimi API example):
+- Stage 2 single task: ~6,000 tokens (10 turns)
+- Stage 3 with 3 SubAgents: ~9,700 tokens (1 root + 3×5 sub turns)
+- **60% cost increase** for context isolation benefit
+
+**Best Practices**:
+- ✅ Use for: Multi-file analysis, large intermediate outputs, independent subtasks
+- ❌ Avoid for: Simple reads, single-step operations, dependent sequential tasks
+
+### Testing & Validation
+
+**Unit Tests** (`test_subagent.py`, 8 tests):
+```bash
+# Run all tests
+make test-subagent
+
+# Run integration tests (requires API key)
+make test-subagent-integration
+```
+
+**Test Coverage**:
+1. `test_subagent_initialization()` - Depth parameter validation
+2. `test_subagent_depth_limit()` - Recursion safety
+3. `test_subagent_context_isolation()` - Message history separation
+4. `test_subagent_tool_definition()` - Tool schema validation
+5. `test_subagent_workspace_isolation()` - Workspace directory separation
+6. `test_system_prompt_includes_subagent()` - System prompt verification
+7. `test_subagent_execution_simple()` - Integration test (optional)
+
+### Future: Stage 4 (Human-in-Loop, Planned Q1 2026)
+
+**Planned Features**:
+- `AskUserConfirmation()` - Approval before destructive operations
+- `RequestUserGuidance()` - Interactive debugging
+- `ShowIntermediateResult()` - Milestone review
 
 ---
 
