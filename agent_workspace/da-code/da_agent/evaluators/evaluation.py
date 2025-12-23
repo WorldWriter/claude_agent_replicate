@@ -82,8 +82,9 @@ class Evaluator:
 
         type, gold_results = self.get_result_file(expected, dir=gold_id_dir, isgold=True)
 
-        # 如果 trajectory_info 有 "result" 键，使用标准流程（DA-Code 官方 agent）
-        if "result" in trajectory_info:
+        # 如果 trajectory_info 有非空 "result" 值，使用标准流程（DA-Code 官方 agent）
+        # 否则使用兼容模式（简化 agent）
+        if trajectory_info.get("result"):  # 检查非空值而不是键存在
             if type == 'number':
                 output_type = ['.txt', '.json', '.png', '.jpg', '.csv', '.npy']
                 output = trajectory_info["result"]
@@ -266,7 +267,8 @@ class Evaluator:
                         if isinstance(result, dict):
                             scores.append(result.get('score', 0.0))
                             output_result = output_result if isinstance(output_result, list) else [output_result]
-                            result['file'] = [os.path.basename(file) for file in output_result]
+                            # 只对文件路径（字符串）调用 basename，跳过字典对象（number 类型）
+                            result['file'] = [os.path.basename(file) if isinstance(file, str) else str(file) for file in output_result]
                             info.append(result)
                         else:
                             scores.append(result if isinstance(result, (int, float)) else 0.0)
@@ -276,7 +278,13 @@ class Evaluator:
                 traceback.print_exc()
                 # continue
                 scores.append(0.0)
-                info.append({"score": 0.0, "errors": [str(e)], 'file': [os.path.basename(file) for file in output_result]})
+                # 安全处理 output_result，避免对字典调用 basename
+                try:
+                    output_result_list = output_result if isinstance(output_result, list) else [output_result]
+                    file_list = [os.path.basename(file) if isinstance(file, str) else str(file) for file in output_result_list]
+                except:
+                    file_list = []
+                info.append({"score": 0.0, "errors": [str(e)], 'file': file_list})
 
             if metric_conj == 'avg':
                 total_score = sum(scores) / len(scores)

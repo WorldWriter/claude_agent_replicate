@@ -15,9 +15,9 @@ from dotenv import load_dotenv
 
 
 class DynamicPlanAgent:
-    """极简 Kimi Agent - 只保留核心功能"""
+    """动态规划 Agent - 只保留核心功能"""
 
-    def __init__(self, api_key: str = None, depth: int = 0, max_depth: int = 3):
+    def __init__(self, api_key: str = None, depth: int = 0, max_depth: int = 2):
         """初始化 Agent
 
         Args:
@@ -159,7 +159,7 @@ class DynamicPlanAgent:
 1. **上下文隔离需求**
    - 子任务会产生大量中间信息,污染主任务上下文
    - 需要独立的错误处理(失败不影响主流程)
-   - 示例: 分析多个文件时,每个文件用SubAgent独立处理
+   - 示例: 分析多个文件时,每个文件用SubAgent独立处理, 说明处理的思路
 
 2. **何时使用SubAgent vs 直接执行**
    - 使用SubAgent: 独立、可失败、有完整工作流的子任务
@@ -167,11 +167,11 @@ class DynamicPlanAgent:
 
 3. **注意事项**
    - SubAgent有递归深度限制(当前: {self.depth}/{self.max_depth})
-   - SubAgent只返回最终结果,中间过程不可见
+   - SubAgent只返回最终结果,中间过程不可见,传递时说明subagent的处理思路和预期返回结果
    - 成本考虑: SubAgent会增加API调用次数
 
 示例:
-- ✓ 好的使用: "用SubAgent分析文件A的数据分布"
+- ✓ 好的使用: "用SubAgent分析文件A的数据分布, 返回各个成分的占比分布"
 - ✗ 不好的使用: "用SubAgent读取文件内容"(直接用ReadFile即可)"""
 
     def _generate_system_reminder_start(self) -> str:
@@ -428,6 +428,7 @@ class DynamicPlanAgent:
 1. 需要隔离处理的独立子任务(避免污染主任务上下文)
 2. 需要独立错误处理的任务(失败不影响主流程)
 3. 批量处理多个独立文件/数据集
+4. 调用SubAgent时, 说明清楚预期的返回结果
 
 注意:
 - SubAgent有独立的messages历史和todos
@@ -838,7 +839,7 @@ class DynamicPlanAgent:
 要求：
 1. **保留重点，去除冗余** - 不是简单压缩，而是提炼关键信息
 2. **结构化输出** - 使用清晰的格式展示关键点
-3. **保留样本** - 如果是数据/文件，包含前几行样本
+3. **保留样本** - 如果是数据/文件，包含列头和前几行样本必须完整保留
 4. **突出特征** - 总结数据/输出的关键特征
 
 针对不同类型：

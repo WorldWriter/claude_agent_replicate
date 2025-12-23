@@ -334,6 +334,61 @@ def post_process_visualization_tasks(output_dir, eval_config_file):
     print(f"\n后处理完成: {success_count} 成功, {fail_count} 失败\n")
 
 
+def copy_gold_results(output_dir, eval_config_file, gold_dir):
+    """
+    将 gold 结果复制到每个任务的输出目录中
+
+    Args:
+        output_dir: Agent 输出目录
+        eval_config_file: 评估配置文件路径
+        gold_dir: Gold 结果目录
+    """
+    # 读取评估配置，获取所有任务ID
+    task_ids = []
+    with open(eval_config_file) as f:
+        for line in f:
+            if line.strip():
+                config = json.loads(line)
+                task_ids.append(config['id'])
+
+    success_count = 0
+    fail_count = 0
+
+    for task_id in task_ids:
+        # 源 gold 目录
+        gold_task_dir = os.path.join(gold_dir, task_id)
+
+        # 目标输出目录
+        task_output_dir = os.path.join(output_dir, task_id)
+
+        # 检查输出目录是否存在
+        if not os.path.exists(task_output_dir):
+            fail_count += 1
+            continue
+
+        # 检查 gold 目录是否存在
+        if not os.path.exists(gold_task_dir):
+            fail_count += 1
+            continue
+
+        # 创建 gold 子目录
+        gold_dest_dir = os.path.join(task_output_dir, 'gold')
+
+        try:
+            # 如果目录已存在，先删除
+            if os.path.exists(gold_dest_dir):
+                shutil.rmtree(gold_dest_dir)
+
+            # 复制整个 gold 目录
+            shutil.copytree(gold_task_dir, gold_dest_dir)
+
+            success_count += 1
+        except Exception as e:
+            fail_count += 1
+
+    print(f"✓ Gold 结果已复制到输出目录 ({success_count} 成功, {fail_count} 失败)")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='DA-Code评估脚本 - 支持训练集/验证集/测试集',
@@ -442,7 +497,28 @@ def main():
     print(f"成功 (≥0.9分):     {high_quality:2d} / {len(results)} ({high_quality/len(results)*100:.1f}%)")
     print(f"部分成功 (0~0.9):  {partial:2d} / {len(results)} ({partial/len(results)*100:.1f}%)")
     print(f"失败 (0分):        {failed:2d} / {len(results)} ({failed/len(results)*100:.1f}%)")
+    print(f"{'='*60}")
+    
+    # 打印详细任务列表
+    print(f"\n任务详情:")
+    for r in results:
+        score = r['total_score']
+        task_id = r['id']  # 评估器返回的是 'id' 而不是 'task_id'
+        
+        # 根据得分确定状态和图标
+        if score >= 0.9:
+            status = "✓ 成功"
+        elif score > 0:
+            status = "⚠ 部分"
+        else:
+            status = "✗ 失败"
+        
+        print(f"  {status} {task_id:20s} (得分: {score:.4f})")
+    
     print(f"{'='*60}\n")
+
+    # 【新增】复制 Gold 结果到输出目录
+    copy_gold_results(output_dir, eval_json, GOLD_DIR)
 
     # 保存
     os.makedirs(LOGS_DIR, exist_ok=True)

@@ -194,7 +194,7 @@ def build_prompt(task_config: dict, task_workspace: str) -> str:
 1. 首先读取并理解数据文件
 2. 编写 Python 代码完成任务
 3. 将结果按要求的格式输出
-4. 如果需要生成文件，请保存到当前工作目录
+4. 按照以上的任务要求, 结果生成文件，请保存到当前工作目录, 一般保存为result.(csv|json|txt)文件
 
 请开始执行任务。
 """
