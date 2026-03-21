@@ -64,8 +64,8 @@ class KimiAgent:
         # 并发工具调用锁（保护 TodoUpdate add 操作的 task_id 生成）
         self._todo_lock = threading.Lock()
 
-        # 显式计划产物（PlanArtifacts）
-        self.plan_artifacts: Dict[str, Any] = {}
+        # 显式计划产物（OutputPlan）
+        self.output_plan: Dict[str, Any] = {}
 
         # Fresh-Context 验证 Agent 开关（默认关闭，benchmark 模式可开启）
         self._enable_verification_agent: bool = False
@@ -179,7 +179,7 @@ class KimiAgent:
 
     def _generate_system_reminder_end(self) -> str:
         """生成Todo短期记忆"""
-        if not self.todos["tasks"] and not self.plan_artifacts:
+        if not self.todos["tasks"] and not self.output_plan:
             return ""
 
         todo_lines = []
@@ -203,20 +203,20 @@ class KimiAgent:
             todo_lines.append("完成任务时，建议提供 result 参数说明执行结果!")
             todo_lines.append("</todo_memory>")
 
-        # 追加 plan_artifacts 块
-        if self.plan_artifacts:
+        # 追加 output_plan 块
+        if self.output_plan:
             todo_lines.append("")
-            todo_lines.append("<plan_artifacts>")
-            todo_lines.append(f"任务目标: {self.plan_artifacts.get('summary', '')}")
+            todo_lines.append("<output_plan>")
+            todo_lines.append(f"任务目标: {self.output_plan.get('summary', '')}")
             todo_lines.append("期望输出:")
-            for f in self.plan_artifacts.get("output_files", []):
+            for f in self.output_plan.get("output_files", []):
                 line = f"  - {f['filename']} ({f['format']})"
                 if f.get("columns"):
                     line += f" 列: {f['columns']}"
                 if f.get("row_constraint"):
                     line += f" | {f['row_constraint']}"
                 todo_lines.append(line)
-            todo_lines.append("</plan_artifacts>")
+            todo_lines.append("</output_plan>")
 
         return "\n".join(todo_lines)
 
@@ -411,14 +411,14 @@ class KimiAgent:
                 "type": "function",
                 "function": {
                     "name": "TodoUpdate",
-                    "description": "管理任务列表(短期记忆)。用于追踪复杂任务的执行进度。对于3步以上的复杂任务,使用此工具创建和更新待办事项。set_artifacts 用于规划阶段声明输出文件格式，帮助后续验证。",
+                    "description": "管理任务列表(短期记忆)。用于追踪复杂任务的执行进度。对于3步以上的复杂任务,使用此工具创建和更新待办事项。plan 用于分析完成后声明输出文件格式，必须在 ReadFile 之后单独调用。",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "action": {
                                 "type": "string",
-                                "enum": ["add", "update_status", "complete", "set_artifacts"],
-                                "description": "操作类型: add=添加新任务, update_status=更新状态, complete=完成任务, set_artifacts=声明输出规格"
+                                "enum": ["add", "update_status", "complete", "plan"],
+                                "description": "操作类型: add=添加新任务, update_status=更新状态, complete=完成任务, plan=声明输出规格（读取分析完成后调用）"
                             },
                             "task_id": {
                                 "type": "string",
@@ -437,9 +437,9 @@ class KimiAgent:
                                 "type": "string",
                                 "description": "任务执行结果 (完成任务时建议提供)。简要说明执行的关键结果，帮助后续决策。例如：'成功读取150行数据'、'脚本执行成功，生成图表trend.png'、'发现5个异常值'"
                             },
-                            "artifacts": {
+                            "output": {
                                 "type": "object",
-                                "description": "输出规格（set_artifacts 时必需）",
+                                "description": "输出规格（plan 时必需）",
                                 "properties": {
                                     "summary": {"type": "string", "description": "一句话任务目标"},
                                     "output_files": {
@@ -654,11 +654,11 @@ class KimiAgent:
                         return f"✓ 任务 {task_id} 已完成"
             return f"❌ 未找到任务: {task_id}"
 
-        elif action == "set_artifacts":
-            artifacts = params.get("artifacts", {})
+        elif action == "plan":
+            artifacts = params.get("output", {})
             if not artifacts:
-                return "ERROR: set_artifacts requires 'artifacts' parameter"
-            self.plan_artifacts = artifacts
+                return "ERROR: plan requires 'output' parameter"
+            self.output_plan = artifacts
             files_desc = ", ".join(f["filename"] for f in artifacts.get("output_files", []))
             return f"✓ 输出规格已记录。目标文件: {files_desc}"
 
@@ -677,13 +677,13 @@ class KimiAgent:
         expected_files = []
         source = "heuristic"
 
-        # Priority 1: Agent-derived plan artifacts
-        if self.plan_artifacts and self.plan_artifacts.get("output_files"):
-            for f in self.plan_artifacts["output_files"]:
+        # Priority 1: Agent-derived output plan
+        if self.output_plan and self.output_plan.get("output_files"):
+            for f in self.output_plan["output_files"]:
                 fn = f["filename"]
                 if fn not in expected_files:
                     expected_files.append(fn)
-            source = "plan_artifacts"
+            source = "output_plan"
 
         # Priority 2: Eval config (benchmark mode)
         if not expected_files:
@@ -778,15 +778,15 @@ class KimiAgent:
                     except Exception:
                         pass
 
-                # B1.5 plan_artifacts 列名检查（无 sample 时启用）
-                if not sample_path and self.plan_artifacts:
-                    for art in self.plan_artifacts.get("output_files", []):
+                # B1.5 output_plan 列名检查（无 sample 时启用）
+                if not sample_path and self.output_plan:
+                    for art in self.output_plan.get("output_files", []):
                         if art["filename"] == expected and art.get("columns"):
                             result_cols = list(result_df.columns)
                             if result_cols != art["columns"]:
                                 issues.append(
                                     f"COLUMNS ({expected}): plan 期望 {art['columns']}，实际 {result_cols}\n"
-                                    f"   Fix: 重命名列使其与 plan_artifacts 声明一致"
+                                    f"   Fix: 重命名列使其与 output_plan 声明一致"
                                 )
 
                 # B2 ML 任务行数
@@ -877,11 +877,11 @@ class KimiAgent:
         verifier.workspace = self.workspace  # Share workspace (read-only intent)
 
         artifacts_section = ""
-        if self.plan_artifacts:
+        if self.output_plan:
             import json as _json
             artifacts_section = (
                 f"\n## 执行Agent声明的输出规格\n```json\n"
-                f"{_json.dumps(self.plan_artifacts, ensure_ascii=False, indent=2)}\n"
+                f"{_json.dumps(self.output_plan, ensure_ascii=False, indent=2)}\n"
                 f"```\n请对比你的独立判断与此声明是否一致。"
             )
 
@@ -980,7 +980,7 @@ ISSUES: [问题描述，如有]
             log_data = {
                 "messages": self.messages,
                 "todos": self.todos,
-                "plan_artifacts": self.plan_artifacts,
+                "output_plan": self.output_plan,
                 "timestamp": timestamp,
                 "turns": len(self.messages),
                 "full_context": self.full_messages_history

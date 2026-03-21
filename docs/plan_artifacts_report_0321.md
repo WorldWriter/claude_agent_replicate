@@ -143,6 +143,30 @@ TodoUpdate(action="set_artifacts", files=["price.csv"])
 
 ---
 
+## 2026-03-21 补丁：重命名与顺序修复
+
+### 问题
+
+实测日志发现两个问题：
+
+1. **命名混乱**：`set_artifacts` 是 CI/CD 术语，不直观。
+2. **顺序错误**：agent 把 `add`（创建任务）和 `set_artifacts`（声明输出）在同一批次并行调用，导致输出规格在未充分分析前猜测，不可靠。
+
+### 改动
+
+**`dynamic_plan_agent.py`**（全局替换）：
+- action 名：`set_artifacts` → `plan`
+- 参数名：`artifacts` → `output`
+- 实例变量：`self.plan_artifacts` → `self.output_plan`
+- system_reminder tag：`<plan_artifacts>` → `<output_plan>`
+- 日志字段：`"plan_artifacts"` → `"output_plan"`
+
+**`.claude/skills/da-code-solver/reference/base.md`**：
+- 阶段一第4步从"建议"改为"**必须**"，明确不能与 `add` 并行
+- TodoUpdate 工具说明同步更新为 `plan` action
+
+---
+
 ## 实现位置
 
 | 位置 | 内容 |
