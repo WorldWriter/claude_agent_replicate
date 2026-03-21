@@ -1,41 +1,49 @@
 """
-极简 Kimi Agent 实现
-- 使用 Kimi API (通过 OpenAI 客户端)
-- 核心功能：工具调用、多轮对话
-- 只保留 ReadFile 和 WriteFile 两个基础工具
+Kimi Agent - Plan → Execute 两阶段工作流
+- 阶段一: 并行完整读取所有文件，制定计划
+- 阶段二: 按计划顺序执行
+- CSV 文件自动显示前10行 + 总行数
 """
 
+import csv
 import os
 import json
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import List, Dict, Any
 from openai import OpenAI
 from dotenv import load_dotenv
 
 
-class DynamicPlanAgent:
-    """动态规划 Agent - 只保留核心功能"""
+class KimiAgent:
+    """Kimi Agent - Plan → Execute 两阶段工作流"""
 
-    def __init__(self, api_key: str = None, depth: int = 0, max_depth: int = 2):
+    def __init__(self, api_key: str = None):
         """初始化 Agent
 
         Args:
             api_key: Kimi API密钥
-            depth: 当前递归深度 (0为根Agent)
-            max_depth: 最大递归深度限制
         """
         load_dotenv()
 
-        # 初始化 Kimi API 客户端
-        self.client = OpenAI(
-            api_key=api_key or os.getenv("MOONSHOT_API_KEY"),
-            base_url="https://api.moonshot.ai/v1"
-        )
+        # 根据 LLM_PROVIDER 动态选择 API 客户端
+        provider = os.getenv("LLM_PROVIDER", "kimi").lower()
+        if provider == "gemini":
+            self.client = OpenAI(
+                api_key=api_key or os.getenv("GEMINI_API_KEY"),
+                base_url=os.getenv("GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta/openai/")
+            )
+            self.model = os.getenv("LLM_MODEL", "gemini-2.0-flash")
+        else:  # kimi (默认)
+            self.client = OpenAI(
+                api_key=api_key or os.getenv("MOONSHOT_API_KEY"),
+                base_url=os.getenv("KIMI_API_BASE", "https://api.moonshot.ai/v1")
+            )
+            self.model = os.getenv("LLM_MODEL", "kimi-k2.5")
 
-        # 递归深度控制（新增）
-        self.depth = depth
-        self.max_depth = max_depth
+        print(f"使用 {provider} API, 模型: {self.model}")
 
         # 消息历史
         self.messages: List[Dict] = []
@@ -49,21 +57,23 @@ class DynamicPlanAgent:
         # 回合计数
         self._current_turn = 0
 
-        # 模型配置
-        self.model = os.getenv("LLM_MODEL", "kimi-k2-turbo-preview")
-
-        # 工作目录（根据深度调整）
-        if depth > 0:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.workspace = f"agent_workspace/output_dir_{timestamp}_depth{depth}"
-        else:
-            self.workspace = "agent_workspace"
+        # 工作目录
+        self.workspace = "agent_workspace"
         os.makedirs(self.workspace, exist_ok=True)
 
-        # 上下文提炼配置
-        self.MESSAGE_COUNT_TRIGGER = 24  # 约12轮对话后触发提炼
-        self.KEEP_RECENT_MESSAGES = 10   # 保留最近10条消息完整
-        self.SUMMARY_MIN_LENGTH = 200    # 只摘要超过200字符的tool result
+        # 并发工具调用锁（保护 TodoUpdate add 操作的 task_id 生成）
+        self._todo_lock = threading.Lock()
+
+        # 显式计划产物（PlanArtifacts）
+        self.plan_artifacts: Dict[str, Any] = {}
+
+        # Fresh-Context 验证 Agent 开关（默认关闭，benchmark 模式可开启）
+        self._enable_verification_agent: bool = False
+
+        # 任务类型（运行时检测，用于注入专项 prompt）
+        self.task_type: str | None = None
+        self._prompts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.claude', 'skills', 'da-code-solver', 'reference')
+        self._prompt_cache: dict = {}
 
     # ============================================
     # 动态上下文构建机制
@@ -87,6 +97,15 @@ class DynamicPlanAgent:
             "content": self._get_system_workflow_prompt()
         })
 
+        # 1.5. 任务类型专项策略（如果检测到类型）
+        if self.task_type:
+            task_hint = self._get_task_hint(self.task_type)
+            if task_hint:
+                full_messages.append({
+                    "role": "user",
+                    "content": f"[TASK_STRATEGY]\n{task_hint}"
+                })
+
         # 2. 系统提醒开始(环境信息)
         reminder_start = self._generate_system_reminder_start()
         if reminder_start:
@@ -109,70 +128,44 @@ class DynamicPlanAgent:
         return full_messages
 
     def _get_system_workflow_prompt(self) -> str:
-        """系统工作流提示 - 指导AI如何思考和行动"""
-        return """你是一个智能AI助手,可以使用工具来完成任务。
+        """系统工作流提示 - 从 prompts/base.md 加载"""
+        return self._load_prompt('base')
 
-## 核心工作原则
+    def _load_prompt(self, name: str) -> str:
+        """从 prompts/<name>.md 加载，带缓存"""
+        if name not in self._prompt_cache:
+            path = os.path.join(self._prompts_dir, f'{name}.md')
+            with open(path, 'r', encoding='utf-8') as f:
+                self._prompt_cache[name] = f.read()
+        return self._prompt_cache[name]
 
-1. **主动使用工具**
-   - 不要只是说你要做什么 - 直接调用工具去执行
-   - 使用 ReadFile 在处理前先了解数据结构
-   - 使用 RunCommand 执行Python脚本进行复杂分析
-   - 使用 WriteFile 保存结果和生成的代码
-   - 使用 SubAgent 处理独立子任务(需要上下文隔离时)
+    def _get_task_hint(self, task_type: str) -> str | None:
+        """根据任务类型返回专项 prompt，无匹配时返回 None"""
+        mapping = {
+            # task_id 前缀（直接调用时）
+            'di': 'di',       # di-text, di-csv
+            'dm': 'dm',       # dm-csv, data-wrangling
+            'ml': 'ml',       # ml-regression, ml-binary, ml-multi, ml-cluster
+            'data-sa': 'sa',  # data-sa
+            'plot': 'plot',   # plot-bar, plot-line, plot-pie, plot-scatter
+            # 英文全称（来自 run_benchmark.py 的 类型: 行）
+            'Data Insight': 'di',
+            'Data Manipulation': 'dm',
+            'ML ': 'ml',              # covers ML Regression / Binary / Multi / Cluster / Competition
+            'Statistical Analysis': 'sa',
+            'Data Visualization': 'plot',
+        }
+        for prefix, fname in mapping.items():
+            if task_type.startswith(prefix) or task_type == prefix:
+                return self._load_prompt(fname)
+        return None
 
-2. **Todo任务管理**
-   - 对于复杂任务(3步以上),使用 TodoUpdate 创建和追踪任务
-   - 始终保持恰好一个任务处于 "in_progress" 状态
-   - **完成任务时提供执行结果**: 使用 result 参数简要说明关键结果
-   - 任务状态: "pending" | "in_progress" | "completed"
-
-3. **思考模型**
-   在每次回复前思考:
-   - 我当前的目标是什么?
-   - 我需要什么信息?(如果缺失,使用工具获取)
-   - 下一步最合适的行动是什么?
-   - 这个行动完成后,任务是否真正完成?
-
-4. **工作空间意识**
-   - 所有文件操作都在 agent_workspace/ 目录中进行
-   - 相对路径自动解析到工作空间
-   - 处理大文件前先检查文件是否存在
-   - 对于大文件(显示超过1000字符),编写Python脚本处理
-
-5. **迭代执行**
-   - 你可以多次调用工具直到任务完全完成
-   - 在进行下一步前先检查工具结果
-   - 如果出现错误,分析并修正后重试
-   - 只有在任务真正完成时才停止
-
-## 工具使用指南
-
-**ReadFile**: 预览数据结构和内容(截断到1000字符)
-**WriteFile**: 保存生成的脚本、结果、报告
-**RunCommand**: 执行Python脚本、数据处理命令
-**TodoUpdate**: 追踪多步骤工作流的任务进度
-**SubAgent**: 隔离处理独立子任务
-
-## SubAgent使用场景
-
-1. **上下文隔离需求**
-   - 子任务会产生大量中间信息,污染主任务上下文
-   - 需要独立的错误处理(失败不影响主流程)
-   - 示例: 分析多个文件时,每个文件用SubAgent独立处理, 说明处理的思路
-
-2. **何时使用SubAgent vs 直接执行**
-   - 使用SubAgent: 独立、可失败、有完整工作流的子任务
-   - 直接执行: 简单工具调用、需要在主上下文中的操作
-
-3. **注意事项**
-   - SubAgent有递归深度限制(当前: {self.depth}/{self.max_depth})
-   - SubAgent只返回最终结果,中间过程不可见,传递时说明subagent的处理思路和预期返回结果
-   - 成本考虑: SubAgent会增加API调用次数
-
-示例:
-- ✓ 好的使用: "用SubAgent分析文件A的数据分布, 返回各个成分的占比分布"
-- ✗ 不好的使用: "用SubAgent读取文件内容"(直接用ReadFile即可)"""
+    def _detect_task_type(self, message: str) -> str | None:
+        """从任务消息中检测任务类型（读取 '类型:' 行）"""
+        for line in message.split('\n'):
+            if line.startswith('类型:'):
+                return line.replace('类型:', '').strip()
+        return None
 
     def _generate_system_reminder_start(self) -> str:
         """生成动态环境上下文"""
@@ -180,33 +173,50 @@ class DynamicPlanAgent:
 当前环境:
 - 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 - 工作空间: {os.path.abspath(self.workspace)}
-- 递归深度: {self.depth}/{self.max_depth}
 - 回合: {self._current_turn}
-- 可用工具: ReadFile, WriteFile, RunCommand, TodoUpdate, SubAgent
+- 可用工具: ReadFile, WriteFile, RunCommand, TodoUpdate, VerifyResult
 </system_context>"""
 
     def _generate_system_reminder_end(self) -> str:
         """生成Todo短期记忆"""
-        if not self.todos["tasks"]:
+        if not self.todos["tasks"] and not self.plan_artifacts:
             return ""
 
-        # 格式化Todo列表
-        todo_lines = ["<todo_memory>", "当前任务:"]
-        for task in self.todos["tasks"]:
-            status_icon = {
-                "pending": "[ ]",
-                "in_progress": "[→]",
-                "completed": "[✓]"
-            }[task["status"]]
-            # Show task with result if available
-            task_line = f"{status_icon} {task['id']}: {task['description']}"
-            if task.get("result"):
-                task_line += f" → {task['result']}"
-            todo_lines.append(task_line)
+        todo_lines = []
 
-        todo_lines.append("\n提醒: 使用 TodoUpdate 工具更新任务状态!")
-        todo_lines.append("完成任务时，建议提供 result 参数说明执行结果!")
-        todo_lines.append("</todo_memory>")
+        # 格式化Todo列表
+        if self.todos["tasks"]:
+            todo_lines.extend(["<todo_memory>", "当前任务:"])
+            for task in self.todos["tasks"]:
+                status_icon = {
+                    "pending": "[ ]",
+                    "in_progress": "[→]",
+                    "completed": "[✓]"
+                }[task["status"]]
+                # Show task with result if available
+                task_line = f"{status_icon} {task['id']}: {task['description']}"
+                if task.get("result"):
+                    task_line += f" → {task['result']}"
+                todo_lines.append(task_line)
+
+            todo_lines.append("\n提醒: 使用 TodoUpdate 工具更新任务状态!")
+            todo_lines.append("完成任务时，建议提供 result 参数说明执行结果!")
+            todo_lines.append("</todo_memory>")
+
+        # 追加 plan_artifacts 块
+        if self.plan_artifacts:
+            todo_lines.append("")
+            todo_lines.append("<plan_artifacts>")
+            todo_lines.append(f"任务目标: {self.plan_artifacts.get('summary', '')}")
+            todo_lines.append("期望输出:")
+            for f in self.plan_artifacts.get("output_files", []):
+                line = f"  - {f['filename']} ({f['format']})"
+                if f.get("columns"):
+                    line += f" 列: {f['columns']}"
+                if f.get("row_constraint"):
+                    line += f" | {f['row_constraint']}"
+                todo_lines.append(line)
+            todo_lines.append("</plan_artifacts>")
 
         return "\n".join(todo_lines)
 
@@ -224,6 +234,9 @@ class DynamicPlanAgent:
         print(f"\n{'='*60}")
         print(f"用户: {user_input}")
         print(f"{'='*60}\n")
+
+        # 检测任务类型
+        self.task_type = self._detect_task_type(user_input)
 
         # 添加用户消息
         self.messages.append({
@@ -257,19 +270,18 @@ class DynamicPlanAgent:
     def _call_kimi(self) -> Any:
         """调用 Kimi API (使用动态上下文)"""
         try:
-            # 智能提炼上下文（如果需要）
-            if self._should_refine_context():
-                self._refine_context()
-
             # 构建动态消息上下文并保存
             full_messages = self._build_dynamic_messages()
             self.full_messages_history = full_messages
+
+            # thinking 模型 (k2.5, k2-thinking) 只允许 temperature=1
+            temp = 1.0 if "k2.5" in self.model or "thinking" in self.model else 0.3
 
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=full_messages,  # 使用动态消息而非静态历史
                 tools=self._get_tools(),
-                temperature=0.3
+                temperature=temp
             )
             return response
         except Exception as e:
@@ -285,12 +297,19 @@ class DynamicPlanAgent:
         """
         message = response.choices[0].message
 
-        # 保存 assistant 消息
-        self.messages.append({
+        # 保存 assistant 消息（兼容 thinking 模型）
+        assistant_msg = {
             "role": "assistant",
-            "content": message.content,
-            "tool_calls": message.tool_calls
-        })
+            "content": message.content or "",
+        }
+        # thinking 模型返回 reasoning_content，必须在后续请求中回传
+        reasoning = getattr(message, "reasoning_content", None)
+        if reasoning:
+            assistant_msg["reasoning_content"] = reasoning
+        # tool_calls 为空时不传，避免部分 API 报错
+        if message.tool_calls:
+            assistant_msg["tool_calls"] = message.tool_calls
+        self.messages.append(assistant_msg)
 
         # 如果没有工具调用，说明任务完成
         if not message.tool_calls:
@@ -298,25 +317,30 @@ class DynamicPlanAgent:
                 print(f"\n助手: {message.content}")
             return True
 
-        # 执行工具调用
-        for tool_call in message.tool_calls:
+        # 并行执行所有工具调用
+        n = len(message.tool_calls)
+        if n > 1:
+            print(f"\n⚡ 并行执行 {n} 个工具调用")
+
+        def _run_one(tool_call):
             tool_name = tool_call.function.name
             tool_args = json.loads(tool_call.function.arguments)
-
             print(f"\n🔧 调用工具: {tool_name}")
             print(f"   参数: {json.dumps(tool_args, ensure_ascii=False, indent=2)}")
+            return str(self._execute_tool(tool_name, tool_args))
 
-            # 执行工具
-            result = self._execute_tool(tool_name, tool_args)
+        if n == 1:
+            results = [_run_one(message.tool_calls[0])]
+        else:
+            with ThreadPoolExecutor(max_workers=n) as executor:
+                results = list(executor.map(_run_one, message.tool_calls))
 
-            # 显示结果
-            result_str = str(result)
+        # 按原始顺序追加结果到消息历史
+        for tool_call, result_str in zip(message.tool_calls, results):
             if len(result_str) > 200:
-                print(f"   结果: {result_str[:200]}...")
+                print(f"   [{tool_call.function.name}] 结果: {result_str[:200]}...")
             else:
-                print(f"   结果: {result_str}")
-
-            # 添加工具结果到消息历史
+                print(f"   [{tool_call.function.name}] 结果: {result_str}")
             self.messages.append({
                 "role": "tool",
                 "tool_call_id": tool_call.id,
@@ -332,7 +356,7 @@ class DynamicPlanAgent:
                 "type": "function",
                 "function": {
                     "name": "ReadFile",
-                    "description": "读取文件内容。注意：最多返回前1000个字符，如果文件过大会被截断。对于大文件建议使用Python脚本分批处理",
+                    "description": "读取文件内容。CSV文件自动显示前10行+总行数。其他文件最多返回前20000个字符，如果文件过大会被截断，建议使用Python脚本分批处理",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -387,14 +411,14 @@ class DynamicPlanAgent:
                 "type": "function",
                 "function": {
                     "name": "TodoUpdate",
-                    "description": "管理任务列表(短期记忆)。用于追踪复杂任务的执行进度。对于3步以上的复杂任务,使用此工具创建和更新待办事项。",
+                    "description": "管理任务列表(短期记忆)。用于追踪复杂任务的执行进度。对于3步以上的复杂任务,使用此工具创建和更新待办事项。set_artifacts 用于规划阶段声明输出文件格式，帮助后续验证。",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "action": {
                                 "type": "string",
-                                "enum": ["add", "update_status", "complete"],
-                                "description": "操作类型: add=添加新任务, update_status=更新状态, complete=完成任务"
+                                "enum": ["add", "update_status", "complete", "set_artifacts"],
+                                "description": "操作类型: add=添加新任务, update_status=更新状态, complete=完成任务, set_artifacts=声明输出规格"
                             },
                             "task_id": {
                                 "type": "string",
@@ -412,6 +436,27 @@ class DynamicPlanAgent:
                             "result": {
                                 "type": "string",
                                 "description": "任务执行结果 (完成任务时建议提供)。简要说明执行的关键结果，帮助后续决策。例如：'成功读取150行数据'、'脚本执行成功，生成图表trend.png'、'发现5个异常值'"
+                            },
+                            "artifacts": {
+                                "type": "object",
+                                "description": "输出规格（set_artifacts 时必需）",
+                                "properties": {
+                                    "summary": {"type": "string", "description": "一句话任务目标"},
+                                    "output_files": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "filename": {"type": "string"},
+                                                "format": {"type": "string", "description": "csv/json/png/jpg"},
+                                                "columns": {"type": "array", "items": {"type": "string"}},
+                                                "row_constraint": {"type": "string"}
+                                            },
+                                            "required": ["filename", "format"]
+                                        }
+                                    }
+                                },
+                                "required": ["summary", "output_files"]
                             }
                         },
                         "required": ["action"]
@@ -421,34 +466,21 @@ class DynamicPlanAgent:
             {
                 "type": "function",
                 "function": {
-                    "name": "SubAgent",
-                    "description": f"""启动子Agent处理独立子任务(上下文隔离)。
-
-使用场景:
-1. 需要隔离处理的独立子任务(避免污染主任务上下文)
-2. 需要独立错误处理的任务(失败不影响主流程)
-3. 批量处理多个独立文件/数据集
-4. 调用SubAgent时, 说明清楚预期的返回结果
-
-注意:
-- SubAgent有独立的messages历史和todos
-- SubAgent只返回最终输出字符串
-- 当前递归深度: {self.depth}/{self.max_depth}
-- 达到最大深度时无法创建SubAgent""",
+                    "name": "VerifyResult",
+                    "description": "验证输出文件质量。检查：文件存在性、列名匹配sample_result.csv、行数（ML任务）、NaN值、数值精度。任务完成前必须调用此工具确认结果正确。",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "task": {
+                            "task_id": {
                                 "type": "string",
-                                "description": "子任务描述。应该是完整、独立的任务说明，SubAgent将基于此独立执行"
+                                "description": "任务ID，如 ml-binary-009"
                             },
-                            "max_turns": {
-                                "type": "integer",
-                                "description": "子Agent最大回合数，默认10。复杂任务可设置更高值",
-                                "default": 10
+                            "task_type": {
+                                "type": "string",
+                                "description": "任务类型，如 ml-binary, plot-bar, di-csv"
                             }
                         },
-                        "required": ["task"]
+                        "required": ["task_id", "task_type"]
                     }
                 }
             }
@@ -465,27 +497,44 @@ class DynamicPlanAgent:
                 return self._tool_run_command(tool_args["command"])
             elif tool_name == "TodoUpdate":
                 return self._tool_todo_update(tool_args)
-            elif tool_name == "SubAgent":
-                return self._tool_sub_agent(tool_args)
+            elif tool_name == "VerifyResult":
+                return self._tool_verify_result(tool_args)
             else:
                 return f"错误: 未知工具 {tool_name}"
         except Exception as e:
             return f"错误: {str(e)}"
 
     def _resolve_path(self, path: str) -> str:
-        """解析路径：绝对路径保持不变，相对路径拼接到 workspace"""
-        return path if os.path.isabs(path) else os.path.join(self.workspace, path)
+        """解析路径：绝对路径保持不变，相对路径解析到工作空间"""
+        if os.path.isabs(path):
+            return path
+        return os.path.join(self.workspace, path)
 
     def _tool_read_file(self, path: str) -> str:
-        """读取文件"""
+        """读取文件，CSV文件返回前10行预览，其他文件截断到20000字符"""
         path = self._resolve_path(path)
-        max_chars = 1000  # 最大字符数限制，约2-3k tokens
 
         try:
+            # CSV 文件：显示前10行 + 总行数
+            if path.lower().endswith('.csv'):
+                with open(path, newline='', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    rows = [next(reader, None) for _ in range(11)]  # header + 10 data rows
+                    rows = [r for r in rows if r is not None]
+
+                # 统计总行数（不含表头）
+                with open(path, encoding='utf-8') as f:
+                    total = sum(1 for _ in f) - 1
+
+                header = rows[0] if rows else []
+                preview = '\n'.join(','.join(r) for r in rows)
+                return f"CSV 文件: {path}\n总行数: {total} 行 × {len(header)} 列\n列名: {header}\n\n前10行:\n{preview}"
+
+            # 其他文件：读取并截断到20000字符
+            max_chars = 20000
             with open(path, 'r', encoding='utf-8') as f:
                 content = f.read()
 
-            # 检查是否超出限制
             original_len = len(content)
             if original_len > max_chars:
                 content = content[:max_chars]
@@ -539,7 +588,7 @@ class DynamicPlanAgent:
                 shell=True,
                 capture_output=True,
                 text=True,
-                timeout=200,  # 200秒超时
+                timeout=500,  # 500秒超时（支持长时间 ML 训练任务）
                 cwd=self.workspace  # 在工作目录中执行
             )
 
@@ -570,14 +619,15 @@ class DynamicPlanAgent:
         action = params["action"]
 
         if action == "add":
-            # 添加新任务
-            task_id = f"task_{len(self.todos['tasks']) + 1}"
-            self.todos["tasks"].append({
-                "id": task_id,
-                "description": params["description"],
-                "status": params.get("status", "pending"),
-                "created_at": datetime.now().isoformat()
-            })
+            # 添加新任务（加锁保证并发时 task_id 唯一）
+            with self._todo_lock:
+                task_id = f"task_{len(self.todos['tasks']) + 1}"
+                self.todos["tasks"].append({
+                    "id": task_id,
+                    "description": params["description"],
+                    "status": params.get("status", "pending"),
+                    "created_at": datetime.now().isoformat()
+                })
             return f"✓ 已添加任务 {task_id}: {params['description']}"
 
         elif action == "update_status":
@@ -604,73 +654,265 @@ class DynamicPlanAgent:
                         return f"✓ 任务 {task_id} 已完成"
             return f"❌ 未找到任务: {task_id}"
 
+        elif action == "set_artifacts":
+            artifacts = params.get("artifacts", {})
+            if not artifacts:
+                return "ERROR: set_artifacts requires 'artifacts' parameter"
+            self.plan_artifacts = artifacts
+            files_desc = ", ".join(f["filename"] for f in artifacts.get("output_files", []))
+            return f"✓ 输出规格已记录。目标文件: {files_desc}"
+
         return "❌ 未知操作"
 
-    def _tool_sub_agent(self, params: Dict) -> str:
-        """
-        SubAgent工具 - 上下文隔离的子任务执行
+    def _tool_verify_result(self, args: Dict) -> str:
+        """验证输出文件质量：文件存在、列名、行数、NaN、精度、JSON、Plot"""
+        import math
+        import json as _json
+        task_id = args.get("task_id", "")
+        task_type = args.get("task_type", "")
+        ws = self.workspace
+        issues = []
 
-        创建新的Agent实例,完全独立的上下文:
-        - 独立的messages历史
-        - 独立的todos
-        - 独立的turn counter
-        - 只返回最终结果字符串
+        # --- 确定期望输出文件（三级优先链）---
+        expected_files = []
+        source = "heuristic"
 
-        Args:
-            params: {
-                "task": str,          # 子任务描述
-                "max_turns": int      # 最大回合数,默认10
-            }
+        # Priority 1: Agent-derived plan artifacts
+        if self.plan_artifacts and self.plan_artifacts.get("output_files"):
+            for f in self.plan_artifacts["output_files"]:
+                fn = f["filename"]
+                if fn not in expected_files:
+                    expected_files.append(fn)
+            source = "plan_artifacts"
 
-        Returns:
-            子Agent的最终输出结果
-        """
-        task = params["task"]
-        max_turns = params.get("max_turns", 10)
+        # Priority 2: Eval config (benchmark mode)
+        if not expected_files:
+            # ws = .../agent_workspace/output_dir_xxx/task_id → 往上两级得 agent_workspace/
+            eval_config_path = os.path.join(
+                os.path.dirname(os.path.dirname(ws)),
+                "da-code/da_code/configs/eval/eval_test.jsonl"
+            )
+            config_found = False
+            if task_id and os.path.exists(eval_config_path):
+                with open(eval_config_path) as _f:
+                    for _line in _f:
+                        _t = _json.loads(_line)
+                        if _t["id"] == task_id:
+                            config_found = True
+                            for _r in _t.get("result", []):
+                                _fv = _r.get("file", [])
+                                if isinstance(_fv, str):
+                                    _fv = [_fv]
+                                for _fn in _fv:
+                                    # 跳过 dabench/ 子目录文件，只保留根目录文件
+                                    if "/" not in _fn and _fn.endswith((".csv", ".json", ".png", ".jpg")):
+                                        if _fn not in expected_files:
+                                            expected_files.append(_fn)
+                            break
 
-        # 检查递归深度限制
-        if self.depth >= self.max_depth:
-            return f"""❌ SubAgent创建失败: 已达到最大递归深度限制 ({self.depth}/{self.max_depth})
+            # NO_FILE 任务（config 存在且明确无文件要求）：直接 PASS
+            if config_found and not expected_files:
+                return f"=== VerifyResult (eval_config): PASS ===\n此任务无文件输出要求，任务可以结束。\n=== End ==="
 
-建议:
-1. 当前任务应在主Agent中完成
-2. 或者简化任务分解策略
-3. 如确需更深递归,请在初始化时增加max_depth参数"""
+            if expected_files:
+                source = "eval_config"
 
-        print(f"\n{'  ' * self.depth}┌─ 启动SubAgent (深度 {self.depth + 1}/{self.max_depth})")
-        print(f"{'  ' * self.depth}│  任务: {task[:80]}{'...' if len(task) > 80 else ''}")
-        print(f"{'  ' * self.depth}│  最大回合: {max_turns}")
+        # Priority 3: Heuristic fallback
+        if not expected_files:
+            if task_id.startswith("ml-competition"):
+                expected_files = ["submission.csv"]
+            elif task_id.startswith("plot-"):
+                expected_files = ["result.png"]
+            elif task_id.startswith("di-text") or task_id.startswith("data-sa"):
+                expected_files = ["result.json"]
+            else:
+                expected_files = ["result.csv"]
+            source = "heuristic"
 
-        try:
-            # 创建SubAgent实例 (递增depth)
-            sub_agent = DynamicPlanAgent(
-                api_key=self.client.api_key,
-                depth=self.depth + 1,
-                max_depth=self.max_depth
+        # --- Check A: 文件存在（多文件需全部存在）---
+        missing = [fn for fn in expected_files if not os.path.exists(os.path.join(ws, fn))]
+        if missing:
+            if len(expected_files) > 1:
+                lines = "\n".join(
+                    f"  - {fn} ({'不存在' if not os.path.exists(os.path.join(ws, fn)) else '存在'})"
+                    for fn in expected_files
+                )
+                return (f"=== VerifyResult: FAIL ===\n"
+                        f"1. MISSING: 需要同时生成以下文件:\n{lines}\n"
+                        f"   Fix: 确保所有文件都保存到 {ws}\n"
+                        f"=== End ===")
+            else:
+                fn = missing[0]
+                return (f"=== VerifyResult: FAIL ===\n"
+                        f"1. MISSING: {fn} 不存在于 {ws}\n"
+                        f"   Fix: 将结果保存到 {os.path.join(ws, fn)}\n"
+                        f"=== End ===")
+
+        # --- 对每个文件做内容检查 ---
+        for expected in expected_files:
+            out_path = os.path.join(ws, expected)
+
+            # --- Check B: CSV 类型专项检查 ---
+            if expected.endswith(".csv"):
+                try:
+                    import pandas as pd
+                    result_df = pd.read_csv(out_path)
+                except Exception as e:
+                    return f"=== VerifyResult: FAIL ===\n1. CSV_READ_ERROR ({expected}): {e}\n=== End ==="
+
+                # B1 列名
+                sample_path = next(
+                    (os.path.join(ws, f) for f in os.listdir(ws) if f.startswith("sample_") and f.endswith(".csv")),
+                    None
+                )
+                if sample_path:
+                    try:
+                        import pandas as pd
+                        sample_cols = list(pd.read_csv(sample_path, nrows=0).columns)
+                        result_cols = list(result_df.columns)
+                        if result_cols != sample_cols:
+                            issues.append(
+                                f"COLUMNS ({expected}): 期望 {sample_cols}，实际 {result_cols}\n"
+                                f"   Fix: 重命名列使其与 sample_result.csv 完全一致（含大小写）"
+                            )
+                    except Exception:
+                        pass
+
+                # B1.5 plan_artifacts 列名检查（无 sample 时启用）
+                if not sample_path and self.plan_artifacts:
+                    for art in self.plan_artifacts.get("output_files", []):
+                        if art["filename"] == expected and art.get("columns"):
+                            result_cols = list(result_df.columns)
+                            if result_cols != art["columns"]:
+                                issues.append(
+                                    f"COLUMNS ({expected}): plan 期望 {art['columns']}，实际 {result_cols}\n"
+                                    f"   Fix: 重命名列使其与 plan_artifacts 声明一致"
+                                )
+
+                # B2 ML 任务行数
+                test_path = os.path.join(ws, "test.csv")
+                if os.path.exists(test_path) and task_type.startswith("ml-"):
+                    try:
+                        expected_rows = sum(1 for _ in open(test_path)) - 1
+                        if len(result_df) != expected_rows:
+                            issues.append(
+                                f"ROW_COUNT ({expected}): test.csv 有 {expected_rows} 行，{expected} 有 {len(result_df)} 行\n"
+                                f"   Fix: 确保对 test.csv 每行输出一个预测"
+                            )
+                    except Exception:
+                        pass
+
+                # B3 NaN 检测
+                if result_df.isnull().any().any():
+                    nan_cols = result_df.columns[result_df.isnull().any()].tolist()
+                    issues.append(
+                        f"NAN ({expected}): 列 {nan_cols} 中存在 NaN\n"
+                        f"   Fix: 用 fillna 或 dropna 处理缺失值"
+                    )
+
+                # B4 精度检测
+                if sample_path:
+                    try:
+                        import pandas as pd
+
+                        def max_decimals(series):
+                            return max(
+                                (len(str(v).rstrip('0').split('.')[-1]) if '.' in str(v) else 0)
+                                for v in series.dropna().head(20)
+                            ) if len(series.dropna()) > 0 else 0
+
+                        sample_df = pd.read_csv(sample_path)
+                        for col in sample_df.select_dtypes(include="number").columns:
+                            if col not in result_df.columns:
+                                continue
+                            s_dec = max_decimals(sample_df[col])
+                            r_dec = max_decimals(result_df[col])
+                            if s_dec > 0 and r_dec > s_dec + 2:
+                                issues.append(
+                                    f"PRECISION ({expected}): 列 '{col}' 有 {r_dec} 位小数，sample 只有 {s_dec} 位\n"
+                                    f"   Fix: df['{col}'] = df['{col}'].round({s_dec})"
+                                )
+                    except Exception:
+                        pass
+
+            # --- Check C: JSON 类型 ---
+            elif expected.endswith(".json"):
+                try:
+                    with open(out_path) as f:
+                        data = _json.load(f)
+                    if not data:
+                        issues.append(f"JSON ({expected}): 文件为空\n   Fix: 确保写入了有效的 JSON 数据")
+                except Exception as e:
+                    issues.append(f"JSON_ERROR ({expected}): {e}\n   Fix: 检查 JSON 格式")
+
+            # --- Check D: Plot 类型 ---
+            elif expected.endswith((".png", ".jpg")):
+                yaml_files = [f for f in os.listdir(ws) if f.endswith((".yaml", ".yml"))]
+                if yaml_files:
+                    issues.append(
+                        f"PLOT_HINT: 已生成 {expected}，请确认 figsize/颜色/标签与 {yaml_files[0]} 配置一致"
+                    )
+
+        # --- 输出报告 ---
+        files_str = ", ".join(expected_files)
+        if not issues:
+            # 机械检查全部 PASS，可选地 spawn 验证 Agent
+            if self._enable_verification_agent:
+                verifier_result = self._spawn_verification_agent(task_id, task_type)
+                if "VERDICT: FAIL" in verifier_result:
+                    issues.append(f"VERIFIER: 独立验证发现问题:\n   {verifier_result}")
+
+        if not issues:
+            return f"=== VerifyResult ({source}): PASS ===\n{files_str} 验证通过，任务可以结束。\n=== End ==="
+
+        report = f"=== VerifyResult ({source}): FAIL ===\n"
+        for i, issue in enumerate(issues, 1):
+            report += f"{i}. {issue}\n"
+        report += "\n请修复以上问题后重新调用 VerifyResult 确认。\n=== End ==="
+        return report
+
+    def _spawn_verification_agent(self, task_id: str, task_type: str) -> str:
+        """Spawn fresh-context verifier to independently check output format."""
+        verifier = KimiAgent()
+        verifier.workspace = self.workspace  # Share workspace (read-only intent)
+
+        artifacts_section = ""
+        if self.plan_artifacts:
+            import json as _json
+            artifacts_section = (
+                f"\n## 执行Agent声明的输出规格\n```json\n"
+                f"{_json.dumps(self.plan_artifacts, ensure_ascii=False, indent=2)}\n"
+                f"```\n请对比你的独立判断与此声明是否一致。"
             )
 
-            # 执行子任务
-            result = sub_agent.run(task, max_turns=max_turns)
+        output_files = [f for f in os.listdir(self.workspace)
+                        if f.endswith(('.csv', '.json', '.png', '.jpg'))
+                        and not f.startswith(('sample_', 'train', 'test'))]
 
-            print(f"{'  ' * self.depth}└─ SubAgent完成 ✓")
+        prompt = f"""你是独立验证Agent。验证任务输出是否符合要求。
 
-            return f"""[SubAgent 执行结果]
-任务: {task}
-深度: {self.depth + 1}
-状态: 成功完成
+任务ID: {task_id} | 类型: {task_type} | 工作目录: {self.workspace}
 
-结果:
-{result}"""
+## 验证步骤
+1. ReadFile 读取 README.md 了解任务要求
+2. 如有 sample_*.csv，读取了解输出格式
+3. 独立判断：应输出什么文件？什么列名？
+4. 检查实际输出: {output_files}
+{artifacts_section}
 
+## 输出格式（直接文本回复）
+VERDICT: PASS 或 FAIL
+EXPECTED_FILES: [文件名列表]
+EXPECTED_COLUMNS: [列名列表，如适用]
+ISSUES: [问题描述，如有]
+
+只读取文件和分析，不要执行代码或修改文件。"""
+
+        try:
+            result = verifier.run(prompt, max_turns=4)
+            return result
         except Exception as e:
-            error_msg = f"""❌ SubAgent执行失败 (深度 {self.depth + 1})
-任务: {task}
-错误: {str(e)}
-
-建议: 检查任务描述是否清晰、SubAgent权限是否足够"""
-
-            print(f"{'  ' * self.depth}└─ SubAgent失败 ✗: {str(e)}")
-            return error_msg
+            return f"Verification agent error: {e}"
 
     def _get_final_output(self) -> str:
         """获取最终输出"""
@@ -685,19 +927,14 @@ class DynamicPlanAgent:
             # 创建 logs 目录
             os.makedirs("logs", exist_ok=True)
 
-            # 生成文件名（按时间，添加深度后缀）
+            # 生成文件名（按时间）
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            if self.depth > 0:
-                log_file = f"logs/{timestamp}_subagent_depth{self.depth}.txt"
-            else:
-                log_file = f"logs/{timestamp}.txt"
+            log_file = f"logs/{timestamp}.txt"
 
             # 格式化对话内容
             log_content = []
             log_content.append("=" * 60)
             log_content.append(f"对话日志 - {timestamp}")
-            if self.depth > 0:
-                log_content.append(f"SubAgent深度: {self.depth}/{self.max_depth}")
             log_content.append("=" * 60)
             log_content.append("")
 
@@ -738,15 +975,14 @@ class DynamicPlanAgent:
             with open(log_file, 'w', encoding='utf-8') as f:
                 f.write("\n".join(log_content))
 
-            # 写入json文件（原始消息 + Todo状态 + 完整上下文 + 深度信息）
+            # 写入json文件（原始消息 + Todo状态 + 完整上下文）
             json_file = log_file.replace('.txt', '.json')
             log_data = {
                 "messages": self.messages,
                 "todos": self.todos,
+                "plan_artifacts": self.plan_artifacts,
                 "timestamp": timestamp,
                 "turns": len(self.messages),
-                "depth": self.depth,                # 新增
-                "max_depth": self.max_depth,        # 新增
                 "full_context": self.full_messages_history
             }
             with open(json_file, 'w', encoding='utf-8') as f:
@@ -756,145 +992,6 @@ class DynamicPlanAgent:
         except Exception as e:
             print(f"\n⚠️  日志保存失败: {e}")
 
-    # ============================================
-    # 智能上下文提炼系统
-    # ============================================
-
-    def _should_refine_context(self) -> bool:
-        """检查是否需要提炼上下文"""
-        return len(self.messages) >= self.MESSAGE_COUNT_TRIGGER
-
-    def _refine_context(self):
-        """
-        智能提炼上下文 - 只摘要tool results
-
-        保留：
-        - 所有 user messages
-        - 所有 assistant messages（包括tool_calls）
-        - 最近KEEP_RECENT_MESSAGES条消息（完整保留）
-
-        提炼：
-        - 旧的 tool results → LLM智能摘要
-        """
-        if len(self.messages) < self.MESSAGE_COUNT_TRIGGER:
-            return
-
-        print(f"\n{'='*60}")
-        print(f"🔍 智能提炼上下文")
-        print(f"{'='*60}")
-
-        # 计算提炼边界
-        refine_boundary = len(self.messages) - self.KEEP_RECENT_MESSAGES
-
-        # 收集需要摘要的tool results
-        to_summarize = []
-        for i in range(refine_boundary):
-            msg = self.messages[i]
-
-            # 只处理tool消息，且未被摘要过，且长度超过阈值
-            if (msg['role'] == 'tool' and
-                not msg.get('_summarized') and
-                len(msg['content']) > self.SUMMARY_MIN_LENGTH):
-
-                to_summarize.append((i, msg['content']))
-
-        if not to_summarize:
-            print("无需摘要的tool结果")
-            print(f"{'='*60}\n")
-            return
-
-        print(f"发现 {len(to_summarize)} 个需要摘要的tool结果")
-
-        # 批量摘要
-        for i, original_content in to_summarize:
-            try:
-                summary = self._summarize_tool_result(original_content)
-
-                # 替换内容
-                self.messages[i]['content'] = summary
-                self.messages[i]['_summarized'] = True
-                self.messages[i]['_original_length'] = len(original_content)
-
-                print(f"  ✓ 已摘要: {len(original_content)} → {len(summary)} 字符")
-
-            except Exception as e:
-                print(f"  ⚠️  摘要失败，保留原内容: {e}")
-                continue
-
-        print(f"{'='*60}\n")
-
-    def _summarize_tool_result(self, tool_result: str) -> str:
-        """
-        使用LLM智能摘要tool result
-
-        目标：保留关键信息，提炼重点
-        - 文件类型和结构
-        - 前几行样本数据
-        - 关键特征和发现
-        - 执行状态（成功/失败）
-        """
-        # 摘要提示词
-        summary_prompt = f"""请智能提炼以下工具执行结果的关键信息。
-
-要求：
-1. **保留重点，去除冗余** - 不是简单压缩，而是提炼关键信息
-2. **结构化输出** - 使用清晰的格式展示关键点
-3. **保留样本** - 如果是数据/文件，包含列头和前几行样本必须完整保留
-4. **突出特征** - 总结数据/输出的关键特征
-
-针对不同类型：
-- **ReadFile**: 文件类型、列/字段结构、前3-5行样本、数据特征（时间范围、主要内容等）
-- **RunCommand**: 执行状态、关键输出行、错误信息（如有）、最终结果
-- **WriteFile**: 文件路径、内容大小、写入状态
-
-输出格式示例：
-```
-文件类型: CSV (4列×150行)
-内容: 2022年1-2月GCP用量数据
-列结构: [date, metric_name, value, unit]
-前3行样本:
-  - 2022-01-01, compute_engine_cpu_hours, 1234.5
-  - 2022-01-01, cloud_storage_gb, 500.2
-  - 2022-01-02, compute_engine_cpu_hours, 1189.3
-关键特征: 覆盖60天，主要指标CPU和存储
-```
-
-工具执行结果:
-{tool_result[:2000]}{'...' if len(tool_result) > 2000 else ''}
-
-智能摘要:"""
-
-        # 调用LLM API
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,  # 使用same model确保一致性
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "你是一个数据分析助手，擅长提炼关键信息，保留重要特征和样本。"
-                    },
-                    {
-                        "role": "user",
-                        "content": summary_prompt
-                    }
-                ],
-                temperature=0.3,  # 稍低温度，确保一致性
-                max_tokens=500    # 限制摘要长度
-            )
-
-            summary = response.choices[0].message.content.strip()
-
-            # 添加摘要标记
-            return f"[智能摘要] {summary}"
-
-        except Exception as e:
-            # 失败时返回简化版（首尾保留）
-            print(f"LLM摘要失败: {e}")
-            lines = tool_result.split('\n')
-            first_lines = '\n'.join(lines[:3])
-            last_lines = '\n'.join(lines[-2:]) if len(lines) > 5 else ""
-            fallback = f"{first_lines}\n...\n{last_lines}" if last_lines else first_lines
-            return f"[摘要失败，保留首尾] {fallback}"
 
 
 # ============================================
@@ -907,7 +1004,7 @@ def example_simple():
     print("示例: 文件操作")
     print("="*60)
 
-    agent = DynamicPlanAgent()
+    agent = KimiAgent()
     result = agent.run("验证下 data/full_gcp_data.csv, 文件太大, 写个python脚本读下前100行. 统计下三列的数量是否一致, 即 Usage Quantity * Cost per Quantity ($) = Unrounded Cost ($), 可以统计下diff ,因为可能有小数点差异")
     print(f"\n最终结果: {result}")
 
@@ -918,7 +1015,7 @@ def example_multi_step():
     print("示例: 多步骤任务")
     print("="*60)
 
-    agent = DynamicPlanAgent()
+    agent = KimiAgent()
     result = agent.run("""
     请完成以下任务:
     1. 找下当前的工作目录下有什么? 找到data/full_gcp_data.csv
@@ -929,13 +1026,14 @@ def example_multi_step():
     """)
     print(f"\n最终结果: {result}")
 
+
 def example_comprehensive_task():
     """示例3: 复杂任务"""
     print("\n" + "="*60)
     print("示例: 多步骤任务")
     print("="*60)
 
-    agent = DynamicPlanAgent()
+    agent = KimiAgent()
     result = agent.run("""
     请你帮我分析下工作目录下的data/full_gcp_data.csv, 探索性分析2022年1月和2022年2月的各指标用量趋势, 并生成报告
     """)
@@ -943,12 +1041,12 @@ def example_comprehensive_task():
 
 
 def example_with_todo():
-    """示例3: 使用Todo追踪复杂任务"""
+    """示例4: 使用Todo追踪复杂任务"""
     print("\n" + "="*60)
     print("示例: Todo任务追踪")
     print("="*60)
 
-    agent = DynamicPlanAgent()
+    agent = KimiAgent()
     result = agent.run("""
     完成以下数据分析任务:
     1. 读取 data/full_gcp_data.csv 文件(如果文件过大,使用Python脚本处理)
@@ -962,6 +1060,9 @@ def example_with_todo():
     print(f"\n最终结果: {result}")
 
 
+# 向后兼容别名（test/run_benchmark.py 等文件使用）
+DynamicPlanAgent = KimiAgent
+
 
 if __name__ == "__main__":
     # 检查 API Key
@@ -974,4 +1075,3 @@ if __name__ == "__main__":
     # example_simple()
     # example_multi_step()
     example_comprehensive_task()
-

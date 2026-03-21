@@ -14,6 +14,8 @@ import json
 import shutil
 import glob
 import argparse
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 # 添加父目录到路径以导入 agent
@@ -176,6 +178,97 @@ def build_prompt(task_config: dict, task_workspace: str) -> str:
     files = os.listdir(task_workspace)
     files_str = "\n".join([f"- {f}" for f in files])
 
+    # 检测 sample 文件并生成格式提示
+    sample_files = [f for f in files if f.startswith('sample_')]
+    config_files = [f for f in files if f.endswith(('.yaml', '.yml'))]
+
+    format_hint = ""
+    if sample_files:
+        format_hint += f"""
+## ⚠️ 输出格式要求 (重要!)
+工作目录中存在样本文件: {', '.join(sample_files)}
+你的输出必须**完全匹配**样本文件的格式:
+- 相同的列名和列顺序
+- 相同的数值精度(小数位数)
+- 只包含样本中出现的列，不要添加额外列
+- 先读取样本文件了解格式，再生成结果
+"""
+
+    if config_files:
+        format_hint += f"""
+## 配置文件
+工作目录中存在配置文件: {', '.join(config_files)}
+对于可视化任务，必须读取配置文件获取: figsize、颜色、字体等参数
+"""
+
+    # 任务类型特定提示
+    type_hints = {
+        "data-insight": """
+## 数据洞察任务注意事项
+- CSV 数值可能带逗号千分位符，使用 `pd.read_csv(file, thousands=',')`
+- 结果要做合理性检查（如人口密度最高应该是小国如Monaco 38000+，不是Palestinian 847）
+- 如果发现结果不合理，检查数据解析是否正确
+- 输出格式严格按照 sample 文件
+""",
+        "data-manipulation": """
+## 数据处理任务注意事项
+- 金融收益计算要仔细理解题意：等权重、市值加权、原始权重的区别
+- 累积收益一般从第一个交易日开始计算，不是从0开始
+- 注意检查计算结果的合理性（日收益率通常在 -10%~+10%）
+- 投资组合权重之和应为 1.0 (100%)
+""",
+        "statistical-analysis": """
+## 统计分析任务注意事项
+- p-value 保留原始精度，不要 round 到 0
+- 如果 p-value 很小 (< 0.0001)，使用科学记数法: `f'{p:.2e}'`
+- 或保留足够位数: `f'{p:.15f}'`
+- p-value 为 0.0 几乎总是错误的！检查精度处理
+""",
+        "ml-regression": """
+## 机器学习任务注意事项
+- 输出列名必须与 README/sample 完全一致，包括空格和括号
+- 不要简化列名，直接复制原始格式
+- 例如: "Biogas Generation Estimate (cu-ft/day)" 不能改成 "biogas_generation_estimate"
+""",
+        "ml-classification": """
+## 分类任务注意事项
+- 输出列名必须与 README/sample 完全一致
+- 分类结果格式要与 sample 匹配（整数/字符串/布尔值）
+""",
+        "plot-bindplot": """
+## 可视化任务注意事项
+- 必须读取 .yaml 配置文件获取绑定参数
+- 图表尺寸、颜色、字体等必须与配置一致
+""",
+        "plot-bindbar": """
+## 可视化任务注意事项
+- 必须读取 .yaml 配置文件获取绑定参数
+- 图表尺寸、颜色、字体等必须与配置一致
+""",
+    }
+
+    # 获取任务类型特定提示（支持部分匹配）
+    type_specific_hint = ""
+    for type_key, hint in type_hints.items():
+        if task_type.startswith(type_key) or type_key in task_type:
+            type_specific_hint = hint
+            break
+
+    # 如果没有精确匹配，尝试更宽泛的类别
+    if not type_specific_hint:
+        if "insight" in task_type or "di-" in task_id:
+            type_specific_hint = type_hints["data-insight"]
+        elif "manipulation" in task_type or "dm-" in task_id:
+            type_specific_hint = type_hints["data-manipulation"]
+        elif "statistical" in task_type or "sa-" in task_id:
+            type_specific_hint = type_hints["statistical-analysis"]
+        elif "regression" in task_type or "ml-regression" in task_id:
+            type_specific_hint = type_hints["ml-regression"]
+        elif "classification" in task_type or "ml-classification" in task_id:
+            type_specific_hint = type_hints["ml-classification"]
+        elif "plot" in task_type:
+            type_specific_hint = type_hints.get("plot-bindplot", "")
+
     prompt = f"""## 任务: {task_id}
 类型: {task_type}
 
@@ -183,7 +276,7 @@ def build_prompt(task_config: dict, task_workspace: str) -> str:
 工作目录: {task_workspace}
 文件列表:
 {files_str}
-
+{format_hint}{type_specific_hint}
 ## 数据说明
 {readme_content[:2000] if readme_content else "请先阅读 README.md 了解数据"}
 
@@ -191,17 +284,21 @@ def build_prompt(task_config: dict, task_workspace: str) -> str:
 {instruction}
 
 ## 执行要求
-1. 首先读取并理解数据文件
-2. 编写 Python 代码完成任务
-3. 将结果按要求的格式输出
-4. 按照以上的任务要求, 结果生成文件，请保存到当前工作目录, 一般保存为result.(csv|json|txt)文件
+1. 首先读取 README.md 和所有数据文件，理解任务
+2. 如果存在 sample_*.* 文件，必须先读取了解输出格式要求
+3. 如果存在 .yaml/.yml 配置文件，必须读取获取参数
+4. 编写 Python 代码完成任务
+5. **关键**: 输出的列名必须与 README/sample 中的写法**完全一致**，不要简化或修改列名!
+   - 错误示例: 把 "Biogas Generation Estimate (cu-ft/day)" 改成 "biogas_generation_estimate"
+   - 正确做法: 直接复制原始列名，包括空格、括号、大小写
+6. 按照以上的任务要求, 结果生成文件，请保存到当前工作目录, 一般保存为result.(csv|json|txt)文件
 
 请开始执行任务。
 """
     return prompt
 
 
-def run_test(task_id: str, agent_name: str, max_turns: int) -> dict:
+def run_test(task_id: str, agent_name: str, max_turns: int, verify_agent: bool = False) -> dict:
     """运行单个测试"""
     print(f"\n{'='*60}")
     print(f"测试任务: {task_id}")
@@ -229,6 +326,9 @@ def run_test(task_id: str, agent_name: str, max_turns: int) -> dict:
     original_workspace = getattr(agent, "workspace", None)
     if hasattr(agent, "workspace"):
         agent.workspace = task_workspace
+    # 启用验证 Agent（如果支持）
+    if verify_agent and hasattr(agent, "_enable_verification_agent"):
+        agent._enable_verification_agent = True
 
     try:
         result = agent.run(prompt, max_turns=max_turns)
@@ -277,11 +377,43 @@ def main():
     parser.add_argument(
         '--force',
         action='store_true',
-        help='强制重新运行所有任务（忽略已有测试结果）'
+        help='强制重新运行所有任务（忽略已有测试结果，兼容旧用法）'
+    )
+    parser.add_argument(
+        '--resume',
+        action='store_true',
+        help='续跑模式：跳过已有日志记录中完成的任务，从断点继续'
+    )
+    parser.add_argument(
+        '--task',
+        type=str,
+        help='只运行指定的单个任务（如: plot-bar-005），忽略 --mode 参数'
+    )
+    parser.add_argument(
+        '--output-dir',
+        type=str,
+        help='自定义输出目录名（相对于 agent_workspace/），覆盖默认值'
+    )
+    parser.add_argument(
+        '--workers',
+        type=int,
+        default=1,
+        help='并行 worker 数量（默认: 1 串行；建议 3-5）'
+    )
+    parser.add_argument(
+        '--verify-agent',
+        action='store_true',
+        help='启用 Fresh-Context 验证 Agent（VerifyResult PASS 后独立验证输出格式）'
     )
     args = parser.parse_args()
 
     agent_cfg = get_agent_config(args.agent)
+    # 允许 --output-dir 覆盖 workspace_root 和 eval_output_dir
+    if args.output_dir:
+        agent_cfg = dict(agent_cfg)
+        agent_cfg["workspace_root"] = os.path.join(WORKSPACE_ROOT, args.output_dir)
+        agent_cfg["eval_output_dir"] = args.output_dir
+        AGENT_CONFIGS[args.agent] = agent_cfg
     log_prefix = agent_cfg["log_prefix"]
 
     max_turns = args.max_turns or agent_cfg["default_max_turns"]
@@ -300,7 +432,12 @@ def main():
     print(f"最大轮次: {max_turns}")
 
     # 1. 根据模式选择任务列表
-    if args.mode == 'quick':
+    if args.task:
+        # 单任务模式
+        all_tasks = [args.task]
+        print(f"\n模式: 单任务测试")
+        print(f"任务ID: {args.task}")
+    elif args.mode == 'quick':
         all_tasks = load_baseline_tasks(mode='quick')
         print(f"\n模式: 快速测试（每类任务各1个）")
         print(f"任务来源: {DATASET_TASKS_FILE}")
@@ -317,13 +454,22 @@ def main():
 
     print(f"任务总数: {len(all_tasks)}")
 
-    # 2. 加载之前的测试结果（除非使用 --force）
-    if args.force:
-        print(f"\n⚠️  强制模式: 将重新运行所有任务（忽略已有结果）")
-        previous_results = {}
-    else:
+    # 2. 加载之前的测试结果
+    if args.resume:
         previous_results = load_previous_results(log_prefix)
-        print(f"已测试任务数: {len(previous_results)}")
+        print(f"\n▶️  续跑模式: 已跳过 {len(previous_results)} 个已完成任务")
+    else:
+        if args.force:
+            # 删除该 agent 的历史日志 JSON（非 merged），重置记录
+            pattern = os.path.join(LOGS_DIR, f"{log_prefix}_*.json")
+            old_logs = [f for f in glob.glob(pattern) if "_merged_" not in os.path.basename(f)]
+            for f in old_logs:
+                os.remove(f)
+            if old_logs:
+                print(f"\n⚠️  强制模式: 已清除 {len(old_logs)} 个历史日志，从头开始")
+            else:
+                print(f"\n⚠️  强制模式: 无历史日志，从头开始")
+        previous_results = {}
 
     # 3. 获取需要测试的任务
     tasks_to_test = get_tasks_to_test(all_tasks, previous_results)
@@ -349,27 +495,46 @@ def main():
     print(f"开始测试 {len(tasks_to_test)} 个任务")
     print("=" * 60)
 
-    # 4. 执行测试
+    # 4. 执行测试（每完成一个任务立即追加保存）
     new_results = []
-    for i, task_id in enumerate(tasks_to_test, 1):
-        print(f"\n[{i}/{len(tasks_to_test)}] 开始测试 {task_id}")
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    new_result_file = os.path.join(LOGS_DIR, f"{log_prefix}_{timestamp}.json")
+    log_lock = threading.Lock()
+    completed_count = 0
 
-        result = run_test(task_id, agent_name=args.agent, max_turns=max_turns)
-        new_results.append(result)
+    def run_and_save(task_id):
+        nonlocal completed_count
+        result = run_test(task_id, agent_name=args.agent, max_turns=max_turns,
+                         verify_agent=args.verify_agent)
+        with log_lock:
+            completed_count += 1
+            new_results.append(result)
+            print(f"\n[{completed_count}/{len(tasks_to_test)}] ✓ {task_id} 状态: {result['status']}")
+            with open(new_result_file, 'w', encoding='utf-8') as f:
+                json.dump(new_results, f, ensure_ascii=False, indent=2)
+        return result
 
-        print(f"状态: {result['status']}")
+    workers = args.workers
+    if workers > 1:
+        print(f"\n⚡ 并行模式: {workers} workers")
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(run_and_save, task_id): task_id for task_id in tasks_to_test}
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    task_id = futures[future]
+                    print(f"\n❌ {task_id} 异常: {e}")
+    else:
+        for i, task_id in enumerate(tasks_to_test, 1):
+            print(f"\n[{i}/{len(tasks_to_test)}] 开始测试 {task_id}")
+            result = run_and_save(task_id)
 
     # 5. 合并结果（之前的 + 新的）
     all_results = list(previous_results.values()) + new_results
 
-    # 6. 保存新测试结果
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    os.makedirs(LOGS_DIR, exist_ok=True)
-
-    # 保存本次新增的测试结果
-    new_result_file = os.path.join(LOGS_DIR, f"{log_prefix}_{timestamp}.json")
-    with open(new_result_file, 'w', encoding='utf-8') as f:
-        json.dump(new_results, f, ensure_ascii=False, indent=2)
+    # 6. 保存最终结果
 
     # 保存完整的合并结果
     merged_result_file = os.path.join(LOGS_DIR, f"{log_prefix}_merged_{timestamp}.json")
