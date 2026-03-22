@@ -64,16 +64,6 @@ class KimiAgent:
         # 并发工具调用锁（保护 TodoUpdate add 操作的 task_id 生成）
         self._todo_lock = threading.Lock()
 
-        # 显式计划产物（OutputPlan）
-        self.output_plan: Dict[str, Any] = {}
-
-        # Fresh-Context 验证 Agent 开关（默认关闭，benchmark 模式可开启）
-        self._enable_verification_agent: bool = False
-
-        # 任务类型（运行时检测，用于注入专项 prompt）
-        self.task_type: str | None = None
-        self._prompts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.claude', 'skills', 'da-code-solver', 'reference')
-        self._prompt_cache: dict = {}
 
     # ============================================
     # 动态上下文构建机制
@@ -97,15 +87,6 @@ class KimiAgent:
             "content": self._get_system_workflow_prompt()
         })
 
-        # 1.5. 任务类型专项策略（如果检测到类型）
-        if self.task_type:
-            task_hint = self._get_task_hint(self.task_type)
-            if task_hint:
-                full_messages.append({
-                    "role": "user",
-                    "content": f"[TASK_STRATEGY]\n{task_hint}"
-                })
-
         # 2. 系统提醒开始(环境信息)
         reminder_start = self._generate_system_reminder_start()
         if reminder_start:
@@ -128,44 +109,11 @@ class KimiAgent:
         return full_messages
 
     def _get_system_workflow_prompt(self) -> str:
-        """系统工作流提示 - 从 prompts/base.md 加载"""
-        return self._load_prompt('base')
-
-    def _load_prompt(self, name: str) -> str:
-        """从 prompts/<name>.md 加载，带缓存"""
-        if name not in self._prompt_cache:
-            path = os.path.join(self._prompts_dir, f'{name}.md')
-            with open(path, 'r', encoding='utf-8') as f:
-                self._prompt_cache[name] = f.read()
-        return self._prompt_cache[name]
-
-    def _get_task_hint(self, task_type: str) -> str | None:
-        """根据任务类型返回专项 prompt，无匹配时返回 None"""
-        mapping = {
-            # task_id 前缀（直接调用时）
-            'di': 'di',       # di-text, di-csv
-            'dm': 'dm',       # dm-csv, data-wrangling
-            'ml': 'ml',       # ml-regression, ml-binary, ml-multi, ml-cluster
-            'data-sa': 'sa',  # data-sa
-            'plot': 'plot',   # plot-bar, plot-line, plot-pie, plot-scatter
-            # 英文全称（来自 run_benchmark.py 的 类型: 行）
-            'Data Insight': 'di',
-            'Data Manipulation': 'dm',
-            'ML ': 'ml',              # covers ML Regression / Binary / Multi / Cluster / Competition
-            'Statistical Analysis': 'sa',
-            'Data Visualization': 'plot',
-        }
-        for prefix, fname in mapping.items():
-            if task_type.startswith(prefix) or task_type == prefix:
-                return self._load_prompt(fname)
-        return None
-
-    def _detect_task_type(self, message: str) -> str | None:
-        """从任务消息中检测任务类型（读取 '类型:' 行）"""
-        for line in message.split('\n'):
-            if line.startswith('类型:'):
-                return line.replace('类型:', '').strip()
-        return None
+        """系统工作流提示 - 从 base.md 加载"""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            '.claude', 'skills', 'da-code-solver', 'reference', 'base.md')
+        with open(path, 'r', encoding='utf-8') as f:
+            return f.read()
 
     def _generate_system_reminder_start(self) -> str:
         """生成动态环境上下文"""
@@ -174,12 +122,11 @@ class KimiAgent:
 - 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 - 工作空间: {os.path.abspath(self.workspace)}
 - 回合: {self._current_turn}
-- 可用工具: ReadFile, WriteFile, RunCommand, TodoUpdate, VerifyResult
 </system_context>"""
 
     def _generate_system_reminder_end(self) -> str:
         """生成Todo短期记忆"""
-        if not self.todos["tasks"] and not self.output_plan:
+        if not self.todos["tasks"]:
             return ""
 
         todo_lines = []
@@ -203,21 +150,6 @@ class KimiAgent:
             todo_lines.append("完成任务时，建议提供 result 参数说明执行结果!")
             todo_lines.append("</todo_memory>")
 
-        # 追加 output_plan 块
-        if self.output_plan:
-            todo_lines.append("")
-            todo_lines.append("<output_plan>")
-            todo_lines.append(f"任务目标: {self.output_plan.get('summary', '')}")
-            todo_lines.append("期望输出:")
-            for f in self.output_plan.get("output_files", []):
-                line = f"  - {f['filename']} ({f['format']})"
-                if f.get("columns"):
-                    line += f" 列: {f['columns']}"
-                if f.get("row_constraint"):
-                    line += f" | {f['row_constraint']}"
-                todo_lines.append(line)
-            todo_lines.append("</output_plan>")
-
         return "\n".join(todo_lines)
 
     def run(self, user_input: str, max_turns: int = 40) -> str:
@@ -234,9 +166,6 @@ class KimiAgent:
         print(f"\n{'='*60}")
         print(f"用户: {user_input}")
         print(f"{'='*60}\n")
-
-        # 检测任务类型
-        self.task_type = self._detect_task_type(user_input)
 
         # 添加用户消息
         self.messages.append({
@@ -411,14 +340,14 @@ class KimiAgent:
                 "type": "function",
                 "function": {
                     "name": "TodoUpdate",
-                    "description": "管理任务列表(短期记忆)。用于追踪复杂任务的执行进度。对于3步以上的复杂任务,使用此工具创建和更新待办事项。plan 用于分析完成后声明输出文件格式，必须在 ReadFile 之后单独调用。",
+                    "description": "管理任务列表(短期记忆)。用于追踪复杂任务的执行进度。对于3步以上的复杂任务,使用此工具创建和更新待办事项。",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "action": {
                                 "type": "string",
-                                "enum": ["add", "update_status", "complete", "plan"],
-                                "description": "操作类型: add=添加新任务, update_status=更新状态, complete=完成任务, plan=声明输出规格（读取分析完成后调用）"
+                                "enum": ["add", "update_status", "complete"],
+                                "description": "操作类型: add=添加新任务, update_status=更新状态, complete=完成任务"
                             },
                             "task_id": {
                                 "type": "string",
@@ -436,51 +365,9 @@ class KimiAgent:
                             "result": {
                                 "type": "string",
                                 "description": "任务执行结果 (完成任务时建议提供)。简要说明执行的关键结果，帮助后续决策。例如：'成功读取150行数据'、'脚本执行成功，生成图表trend.png'、'发现5个异常值'"
-                            },
-                            "output": {
-                                "type": "object",
-                                "description": "输出规格（plan 时必需）",
-                                "properties": {
-                                    "summary": {"type": "string", "description": "一句话任务目标"},
-                                    "output_files": {
-                                        "type": "array",
-                                        "items": {
-                                            "type": "object",
-                                            "properties": {
-                                                "filename": {"type": "string"},
-                                                "format": {"type": "string", "description": "csv/json/png/jpg"},
-                                                "columns": {"type": "array", "items": {"type": "string"}},
-                                                "row_constraint": {"type": "string"}
-                                            },
-                                            "required": ["filename", "format"]
-                                        }
-                                    }
-                                },
-                                "required": ["summary", "output_files"]
                             }
                         },
                         "required": ["action"]
-                    }
-                }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "VerifyResult",
-                    "description": "验证输出文件质量。检查：文件存在性、列名匹配sample_result.csv、行数（ML任务）、NaN值、数值精度。任务完成前必须调用此工具确认结果正确。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "task_id": {
-                                "type": "string",
-                                "description": "任务ID，如 ml-binary-009"
-                            },
-                            "task_type": {
-                                "type": "string",
-                                "description": "任务类型，如 ml-binary, plot-bar, di-csv"
-                            }
-                        },
-                        "required": ["task_id", "task_type"]
                     }
                 }
             }
@@ -497,8 +384,6 @@ class KimiAgent:
                 return self._tool_run_command(tool_args["command"])
             elif tool_name == "TodoUpdate":
                 return self._tool_todo_update(tool_args)
-            elif tool_name == "VerifyResult":
-                return self._tool_verify_result(tool_args)
             else:
                 return f"错误: 未知工具 {tool_name}"
         except Exception as e:
@@ -654,265 +539,7 @@ class KimiAgent:
                         return f"✓ 任务 {task_id} 已完成"
             return f"❌ 未找到任务: {task_id}"
 
-        elif action == "plan":
-            artifacts = params.get("output", {})
-            if not artifacts:
-                return "ERROR: plan requires 'output' parameter"
-            self.output_plan = artifacts
-            files_desc = ", ".join(f["filename"] for f in artifacts.get("output_files", []))
-            return f"✓ 输出规格已记录。目标文件: {files_desc}"
-
         return "❌ 未知操作"
-
-    def _tool_verify_result(self, args: Dict) -> str:
-        """验证输出文件质量：文件存在、列名、行数、NaN、精度、JSON、Plot"""
-        import math
-        import json as _json
-        task_id = args.get("task_id", "")
-        task_type = args.get("task_type", "")
-        ws = self.workspace
-        issues = []
-
-        # --- 确定期望输出文件（三级优先链）---
-        expected_files = []
-        source = "heuristic"
-
-        # Priority 1: Agent-derived output plan
-        if self.output_plan and self.output_plan.get("output_files"):
-            for f in self.output_plan["output_files"]:
-                fn = f["filename"]
-                if fn not in expected_files:
-                    expected_files.append(fn)
-            source = "output_plan"
-
-        # Priority 2: Eval config (benchmark mode)
-        if not expected_files:
-            # ws = .../agent_workspace/output_dir_xxx/task_id → 往上两级得 agent_workspace/
-            eval_config_path = os.path.join(
-                os.path.dirname(os.path.dirname(ws)),
-                "da-code/da_code/configs/eval/eval_test.jsonl"
-            )
-            config_found = False
-            if task_id and os.path.exists(eval_config_path):
-                with open(eval_config_path) as _f:
-                    for _line in _f:
-                        _t = _json.loads(_line)
-                        if _t["id"] == task_id:
-                            config_found = True
-                            for _r in _t.get("result", []):
-                                _fv = _r.get("file", [])
-                                if isinstance(_fv, str):
-                                    _fv = [_fv]
-                                for _fn in _fv:
-                                    # 跳过 dabench/ 子目录文件，只保留根目录文件
-                                    if "/" not in _fn and _fn.endswith((".csv", ".json", ".png", ".jpg")):
-                                        if _fn not in expected_files:
-                                            expected_files.append(_fn)
-                            break
-
-            # NO_FILE 任务（config 存在且明确无文件要求）：直接 PASS
-            if config_found and not expected_files:
-                return f"=== VerifyResult (eval_config): PASS ===\n此任务无文件输出要求，任务可以结束。\n=== End ==="
-
-            if expected_files:
-                source = "eval_config"
-
-        # Priority 3: Heuristic fallback
-        if not expected_files:
-            if task_id.startswith("ml-competition"):
-                expected_files = ["submission.csv"]
-            elif task_id.startswith("plot-"):
-                expected_files = ["result.png"]
-            elif task_id.startswith("di-text") or task_id.startswith("data-sa"):
-                expected_files = ["result.json"]
-            else:
-                expected_files = ["result.csv"]
-            source = "heuristic"
-
-        # --- Check A: 文件存在（多文件需全部存在）---
-        missing = [fn for fn in expected_files if not os.path.exists(os.path.join(ws, fn))]
-        if missing:
-            if len(expected_files) > 1:
-                lines = "\n".join(
-                    f"  - {fn} ({'不存在' if not os.path.exists(os.path.join(ws, fn)) else '存在'})"
-                    for fn in expected_files
-                )
-                return (f"=== VerifyResult: FAIL ===\n"
-                        f"1. MISSING: 需要同时生成以下文件:\n{lines}\n"
-                        f"   Fix: 确保所有文件都保存到 {ws}\n"
-                        f"=== End ===")
-            else:
-                fn = missing[0]
-                return (f"=== VerifyResult: FAIL ===\n"
-                        f"1. MISSING: {fn} 不存在于 {ws}\n"
-                        f"   Fix: 将结果保存到 {os.path.join(ws, fn)}\n"
-                        f"=== End ===")
-
-        # --- 对每个文件做内容检查 ---
-        for expected in expected_files:
-            out_path = os.path.join(ws, expected)
-
-            # --- Check B: CSV 类型专项检查 ---
-            if expected.endswith(".csv"):
-                try:
-                    import pandas as pd
-                    result_df = pd.read_csv(out_path)
-                except Exception as e:
-                    return f"=== VerifyResult: FAIL ===\n1. CSV_READ_ERROR ({expected}): {e}\n=== End ==="
-
-                # B1 列名
-                sample_path = next(
-                    (os.path.join(ws, f) for f in os.listdir(ws) if f.startswith("sample_") and f.endswith(".csv")),
-                    None
-                )
-                if sample_path:
-                    try:
-                        import pandas as pd
-                        sample_cols = list(pd.read_csv(sample_path, nrows=0).columns)
-                        result_cols = list(result_df.columns)
-                        if result_cols != sample_cols:
-                            issues.append(
-                                f"COLUMNS ({expected}): 期望 {sample_cols}，实际 {result_cols}\n"
-                                f"   Fix: 重命名列使其与 sample_result.csv 完全一致（含大小写）"
-                            )
-                    except Exception:
-                        pass
-
-                # B1.5 output_plan 列名检查（无 sample 时启用）
-                if not sample_path and self.output_plan:
-                    for art in self.output_plan.get("output_files", []):
-                        if art["filename"] == expected and art.get("columns"):
-                            result_cols = list(result_df.columns)
-                            if result_cols != art["columns"]:
-                                issues.append(
-                                    f"COLUMNS ({expected}): plan 期望 {art['columns']}，实际 {result_cols}\n"
-                                    f"   Fix: 重命名列使其与 output_plan 声明一致"
-                                )
-
-                # B2 ML 任务行数
-                test_path = os.path.join(ws, "test.csv")
-                if os.path.exists(test_path) and task_type.startswith("ml-"):
-                    try:
-                        expected_rows = sum(1 for _ in open(test_path)) - 1
-                        if len(result_df) != expected_rows:
-                            issues.append(
-                                f"ROW_COUNT ({expected}): test.csv 有 {expected_rows} 行，{expected} 有 {len(result_df)} 行\n"
-                                f"   Fix: 确保对 test.csv 每行输出一个预测"
-                            )
-                    except Exception:
-                        pass
-
-                # B3 NaN 检测
-                if result_df.isnull().any().any():
-                    nan_cols = result_df.columns[result_df.isnull().any()].tolist()
-                    issues.append(
-                        f"NAN ({expected}): 列 {nan_cols} 中存在 NaN\n"
-                        f"   Fix: 用 fillna 或 dropna 处理缺失值"
-                    )
-
-                # B4 精度检测
-                if sample_path:
-                    try:
-                        import pandas as pd
-
-                        def max_decimals(series):
-                            return max(
-                                (len(str(v).rstrip('0').split('.')[-1]) if '.' in str(v) else 0)
-                                for v in series.dropna().head(20)
-                            ) if len(series.dropna()) > 0 else 0
-
-                        sample_df = pd.read_csv(sample_path)
-                        for col in sample_df.select_dtypes(include="number").columns:
-                            if col not in result_df.columns:
-                                continue
-                            s_dec = max_decimals(sample_df[col])
-                            r_dec = max_decimals(result_df[col])
-                            if s_dec > 0 and r_dec > s_dec + 2:
-                                issues.append(
-                                    f"PRECISION ({expected}): 列 '{col}' 有 {r_dec} 位小数，sample 只有 {s_dec} 位\n"
-                                    f"   Fix: df['{col}'] = df['{col}'].round({s_dec})"
-                                )
-                    except Exception:
-                        pass
-
-            # --- Check C: JSON 类型 ---
-            elif expected.endswith(".json"):
-                try:
-                    with open(out_path) as f:
-                        data = _json.load(f)
-                    if not data:
-                        issues.append(f"JSON ({expected}): 文件为空\n   Fix: 确保写入了有效的 JSON 数据")
-                except Exception as e:
-                    issues.append(f"JSON_ERROR ({expected}): {e}\n   Fix: 检查 JSON 格式")
-
-            # --- Check D: Plot 类型 ---
-            elif expected.endswith((".png", ".jpg")):
-                yaml_files = [f for f in os.listdir(ws) if f.endswith((".yaml", ".yml"))]
-                if yaml_files:
-                    issues.append(
-                        f"PLOT_HINT: 已生成 {expected}，请确认 figsize/颜色/标签与 {yaml_files[0]} 配置一致"
-                    )
-
-        # --- 输出报告 ---
-        files_str = ", ".join(expected_files)
-        if not issues:
-            # 机械检查全部 PASS，可选地 spawn 验证 Agent
-            if self._enable_verification_agent:
-                verifier_result = self._spawn_verification_agent(task_id, task_type)
-                if "VERDICT: FAIL" in verifier_result:
-                    issues.append(f"VERIFIER: 独立验证发现问题:\n   {verifier_result}")
-
-        if not issues:
-            return f"=== VerifyResult ({source}): PASS ===\n{files_str} 验证通过，任务可以结束。\n=== End ==="
-
-        report = f"=== VerifyResult ({source}): FAIL ===\n"
-        for i, issue in enumerate(issues, 1):
-            report += f"{i}. {issue}\n"
-        report += "\n请修复以上问题后重新调用 VerifyResult 确认。\n=== End ==="
-        return report
-
-    def _spawn_verification_agent(self, task_id: str, task_type: str) -> str:
-        """Spawn fresh-context verifier to independently check output format."""
-        verifier = KimiAgent()
-        verifier.workspace = self.workspace  # Share workspace (read-only intent)
-
-        artifacts_section = ""
-        if self.output_plan:
-            import json as _json
-            artifacts_section = (
-                f"\n## 执行Agent声明的输出规格\n```json\n"
-                f"{_json.dumps(self.output_plan, ensure_ascii=False, indent=2)}\n"
-                f"```\n请对比你的独立判断与此声明是否一致。"
-            )
-
-        output_files = [f for f in os.listdir(self.workspace)
-                        if f.endswith(('.csv', '.json', '.png', '.jpg'))
-                        and not f.startswith(('sample_', 'train', 'test'))]
-
-        prompt = f"""你是独立验证Agent。验证任务输出是否符合要求。
-
-任务ID: {task_id} | 类型: {task_type} | 工作目录: {self.workspace}
-
-## 验证步骤
-1. ReadFile 读取 README.md 了解任务要求
-2. 如有 sample_*.csv，读取了解输出格式
-3. 独立判断：应输出什么文件？什么列名？
-4. 检查实际输出: {output_files}
-{artifacts_section}
-
-## 输出格式（直接文本回复）
-VERDICT: PASS 或 FAIL
-EXPECTED_FILES: [文件名列表]
-EXPECTED_COLUMNS: [列名列表，如适用]
-ISSUES: [问题描述，如有]
-
-只读取文件和分析，不要执行代码或修改文件。"""
-
-        try:
-            result = verifier.run(prompt, max_turns=4)
-            return result
-        except Exception as e:
-            return f"Verification agent error: {e}"
 
     def _get_final_output(self) -> str:
         """获取最终输出"""
@@ -980,7 +607,6 @@ ISSUES: [问题描述，如有]
             log_data = {
                 "messages": self.messages,
                 "todos": self.todos,
-                "output_plan": self.output_plan,
                 "timestamp": timestamp,
                 "turns": len(self.messages),
                 "full_context": self.full_messages_history
@@ -994,69 +620,10 @@ ISSUES: [问题描述，如有]
 
 
 
-# ============================================
-# 使用示例
-# ============================================
-
-def example_simple():
-    """示例1: 简单文件操作"""
-    print("\n" + "="*60)
-    print("示例: 文件操作")
-    print("="*60)
-
+def example():
+    """示例: 简单文件操作"""
     agent = KimiAgent()
     result = agent.run("验证下 data/full_gcp_data.csv, 文件太大, 写个python脚本读下前100行. 统计下三列的数量是否一致, 即 Usage Quantity * Cost per Quantity ($) = Unrounded Cost ($), 可以统计下diff ,因为可能有小数点差异")
-    print(f"\n最终结果: {result}")
-
-
-def example_multi_step():
-    """示例2: 多步骤任务"""
-    print("\n" + "="*60)
-    print("示例: 多步骤任务")
-    print("="*60)
-
-    agent = KimiAgent()
-    result = agent.run("""
-    请完成以下任务:
-    1. 找下当前的工作目录下有什么? 找到data/full_gcp_data.csv
-    2. 写个python 脚本,并运行(当前已经有相关脚本, 可直接运行). 该脚本的功能是读取data/full_gcp_data.csv 文件, 并打印出文件的行数和列数.
-    3. 对比2022年1月和2022年2月的各指标用量趋势, 并绘制下趋势图.
-    4. 对比每天的的波动情况, 识别异常信号(如异常高或低的天).
-    5. 生成分析报告, 包括趋势图和异常信号分析.
-    """)
-    print(f"\n最终结果: {result}")
-
-
-def example_comprehensive_task():
-    """示例3: 复杂任务"""
-    print("\n" + "="*60)
-    print("示例: 多步骤任务")
-    print("="*60)
-
-    agent = KimiAgent()
-    result = agent.run("""
-    请你帮我分析下工作目录下的data/full_gcp_data.csv, 探索性分析2022年1月和2022年2月的各指标用量趋势, 并生成报告
-    """)
-    print(f"\n最终结果: {result}")
-
-
-def example_with_todo():
-    """示例4: 使用Todo追踪复杂任务"""
-    print("\n" + "="*60)
-    print("示例: Todo任务追踪")
-    print("="*60)
-
-    agent = KimiAgent()
-    result = agent.run("""
-    完成以下数据分析任务:
-    1. 读取 data/full_gcp_data.csv 文件(如果文件过大,使用Python脚本处理)
-    2. 分析2022年1月和2月的用量趋势
-    3. 识别用量最高的前5个资源
-    4. 绘制趋势对比图
-    5. 生成分析报告
-
-    这是一个多步骤任务，请使用Todo工具追踪进度。
-    """)
     print(f"\n最终结果: {result}")
 
 
@@ -1065,13 +632,8 @@ DynamicPlanAgent = KimiAgent
 
 
 if __name__ == "__main__":
-    # 检查 API Key
     load_dotenv()
     if not os.getenv("MOONSHOT_API_KEY"):
         print("❌ 请在 .env 文件中设置 MOONSHOT_API_KEY")
         exit(1)
-
-    # 运行示例
-    # example_simple()
-    # example_multi_step()
-    example_comprehensive_task()
+    example()

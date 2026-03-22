@@ -33,6 +33,45 @@ WORKSPACE_ROOT = os.path.join(PROJECT_ROOT, "agent_workspace")
 LOGS_DIR = os.path.join(PROJECT_ROOT, "logs")
 DATASET_TASKS_FILE = os.path.join(os.path.dirname(__file__), "dataset_tasks.json")
 
+PROMPTS_DIR = os.path.join(PROJECT_ROOT, '.claude', 'skills', 'da-code-solver', 'reference')
+
+
+def load_task_strategy(task_type: str, task_id: str) -> str:
+    """根据任务类型/ID加载对应的策略 prompt (.md 文件)"""
+    mapping = {
+        'di': 'di', 'data-insight': 'di', 'Data Insight': 'di',
+        'dm': 'dm', 'data-manipulation': 'dm', 'Data Manipulation': 'dm',
+        'ml': 'ml', 'ML ': 'ml',
+        'data-sa': 'sa', 'statistical': 'sa', 'Statistical Analysis': 'sa',
+        'plot': 'plot', 'Data Visualization': 'plot',
+    }
+    # 匹配 task_type 或 task_id 前缀
+    fname = None
+    for prefix, md_name in mapping.items():
+        if task_type.startswith(prefix) or prefix in task_type or task_id.startswith(prefix):
+            fname = md_name
+            break
+    # 宽泛回退
+    if not fname:
+        if 'insight' in task_type or task_id.startswith('di-'):
+            fname = 'di'
+        elif 'manipulation' in task_type or task_id.startswith('dm-'):
+            fname = 'dm'
+        elif 'regression' in task_type or 'classification' in task_type or task_id.startswith('ml-'):
+            fname = 'ml'
+        elif 'statistical' in task_type or task_id.startswith('data-sa'):
+            fname = 'sa'
+        elif 'plot' in task_type or task_id.startswith('plot-'):
+            fname = 'plot'
+    if not fname:
+        return ''
+    path = os.path.join(PROMPTS_DIR, f'{fname}.md')
+    if not os.path.exists(path):
+        return ''
+    with open(path, 'r', encoding='utf-8') as f:
+        return f.read()
+
+
 AGENT_CONFIGS = {
     "dynamic": {
         "name": "Dynamic Plan Agent (Stage 2)",
@@ -201,73 +240,10 @@ def build_prompt(task_config: dict, task_workspace: str) -> str:
 对于可视化任务，必须读取配置文件获取: figsize、颜色、字体等参数
 """
 
-    # 任务类型特定提示
-    type_hints = {
-        "data-insight": """
-## 数据洞察任务注意事项
-- CSV 数值可能带逗号千分位符，使用 `pd.read_csv(file, thousands=',')`
-- 结果要做合理性检查（如人口密度最高应该是小国如Monaco 38000+，不是Palestinian 847）
-- 如果发现结果不合理，检查数据解析是否正确
-- 输出格式严格按照 sample 文件
-""",
-        "data-manipulation": """
-## 数据处理任务注意事项
-- 金融收益计算要仔细理解题意：等权重、市值加权、原始权重的区别
-- 累积收益一般从第一个交易日开始计算，不是从0开始
-- 注意检查计算结果的合理性（日收益率通常在 -10%~+10%）
-- 投资组合权重之和应为 1.0 (100%)
-""",
-        "statistical-analysis": """
-## 统计分析任务注意事项
-- p-value 保留原始精度，不要 round 到 0
-- 如果 p-value 很小 (< 0.0001)，使用科学记数法: `f'{p:.2e}'`
-- 或保留足够位数: `f'{p:.15f}'`
-- p-value 为 0.0 几乎总是错误的！检查精度处理
-""",
-        "ml-regression": """
-## 机器学习任务注意事项
-- 输出列名必须与 README/sample 完全一致，包括空格和括号
-- 不要简化列名，直接复制原始格式
-- 例如: "Biogas Generation Estimate (cu-ft/day)" 不能改成 "biogas_generation_estimate"
-""",
-        "ml-classification": """
-## 分类任务注意事项
-- 输出列名必须与 README/sample 完全一致
-- 分类结果格式要与 sample 匹配（整数/字符串/布尔值）
-""",
-        "plot-bindplot": """
-## 可视化任务注意事项
-- 必须读取 .yaml 配置文件获取绑定参数
-- 图表尺寸、颜色、字体等必须与配置一致
-""",
-        "plot-bindbar": """
-## 可视化任务注意事项
-- 必须读取 .yaml 配置文件获取绑定参数
-- 图表尺寸、颜色、字体等必须与配置一致
-""",
-    }
-
-    # 获取任务类型特定提示（支持部分匹配）
-    type_specific_hint = ""
-    for type_key, hint in type_hints.items():
-        if task_type.startswith(type_key) or type_key in task_type:
-            type_specific_hint = hint
-            break
-
-    # 如果没有精确匹配，尝试更宽泛的类别
-    if not type_specific_hint:
-        if "insight" in task_type or "di-" in task_id:
-            type_specific_hint = type_hints["data-insight"]
-        elif "manipulation" in task_type or "dm-" in task_id:
-            type_specific_hint = type_hints["data-manipulation"]
-        elif "statistical" in task_type or "sa-" in task_id:
-            type_specific_hint = type_hints["statistical-analysis"]
-        elif "regression" in task_type or "ml-regression" in task_id:
-            type_specific_hint = type_hints["ml-regression"]
-        elif "classification" in task_type or "ml-classification" in task_id:
-            type_specific_hint = type_hints["ml-classification"]
-        elif "plot" in task_type:
-            type_specific_hint = type_hints.get("plot-bindplot", "")
+    # 加载任务类型策略（从 .md 文件）
+    type_specific_hint = load_task_strategy(task_type, task_id)
+    if type_specific_hint:
+        type_specific_hint = f"\n## 任务类型策略\n{type_specific_hint}\n"
 
     prompt = f"""## 任务: {task_id}
 类型: {task_type}
@@ -298,7 +274,7 @@ def build_prompt(task_config: dict, task_workspace: str) -> str:
     return prompt
 
 
-def run_test(task_id: str, agent_name: str, max_turns: int, verify_agent: bool = False) -> dict:
+def run_test(task_id: str, agent_name: str, max_turns: int) -> dict:
     """运行单个测试"""
     print(f"\n{'='*60}")
     print(f"测试任务: {task_id}")
@@ -326,10 +302,6 @@ def run_test(task_id: str, agent_name: str, max_turns: int, verify_agent: bool =
     original_workspace = getattr(agent, "workspace", None)
     if hasattr(agent, "workspace"):
         agent.workspace = task_workspace
-    # 启用验证 Agent（如果支持）
-    if verify_agent and hasattr(agent, "_enable_verification_agent"):
-        agent._enable_verification_agent = True
-
     try:
         result = agent.run(prompt, max_turns=max_turns)
         status = "completed"
@@ -399,11 +371,6 @@ def main():
         type=int,
         default=1,
         help='并行 worker 数量（默认: 1 串行；建议 3-5）'
-    )
-    parser.add_argument(
-        '--verify-agent',
-        action='store_true',
-        help='启用 Fresh-Context 验证 Agent（VerifyResult PASS 后独立验证输出格式）'
     )
     args = parser.parse_args()
 
@@ -505,8 +472,7 @@ def main():
 
     def run_and_save(task_id):
         nonlocal completed_count
-        result = run_test(task_id, agent_name=args.agent, max_turns=max_turns,
-                         verify_agent=args.verify_agent)
+        result = run_test(task_id, agent_name=args.agent, max_turns=max_turns)
         with log_lock:
             completed_count += 1
             new_results.append(result)
