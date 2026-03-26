@@ -202,6 +202,7 @@ OUTPUT_DIR = os.path.join(PROJECT_ROOT, "agent_workspace/output_dir")
 GOLD_DIR = os.path.join(PROJECT_ROOT, "agent_workspace/da-code/da_code/gold")
 EVAL_DIR = os.path.join(PROJECT_ROOT, "agent_workspace/da-code/da_code/configs/eval")
 LOGS_DIR = os.path.join(PROJECT_ROOT, "logs")
+HISTORY_CSV = os.path.join(LOGS_DIR, "eval_history.csv")
 
 
 def load_dataset_config():
@@ -389,6 +390,26 @@ def copy_gold_results(output_dir, eval_config_file, gold_dir):
     print(f"✓ Gold 结果已复制到输出目录 ({success_count} 成功, {fail_count} 失败)")
 
 
+def save_to_history_csv(dataset, agent, avg_score, avg_finished, high_quality, partial, failed, total_tasks):
+    """追加结果到全局历史CSV"""
+    import csv
+    file_exists = os.path.exists(HISTORY_CSV)
+    
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    header = ['timestamp', 'dataset', 'agent', 'avg_score', 'completion_rate', 'success', 'partial', 'fail', 'total_tasks']
+    row = [timestamp, dataset, agent, f"{avg_score:.4f}", f"{avg_finished:.2%}", high_quality, partial, failed, total_tasks]
+    
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    with open(HISTORY_CSV, 'a', newline='') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(header)
+        writer.writerow(row)
+    
+    print(f"✓ 历史得分已追加到: {HISTORY_CSV}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='DA-Code评估脚本 - 支持训练集/验证集/测试集',
@@ -540,6 +561,18 @@ def main():
         }, f, indent=2)
 
     print(f"✓ 结果已保存: {result_file}\n")
+
+    # 【新增】追加到历史CSV
+    save_to_history_csv(
+        dataset, 
+        output_dir_name, 
+        avg_score, 
+        avg_finished, 
+        high_quality, 
+        partial, 
+        failed, 
+        len(results)
+    )
 
 
 if __name__ == '__main__':

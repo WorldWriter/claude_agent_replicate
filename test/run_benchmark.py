@@ -29,6 +29,7 @@ DA_CODE_DIR = os.path.join(PROJECT_ROOT, "agent_workspace/da-code/da_code")
 SOURCE_DIR = os.path.join(DA_CODE_DIR, "source")
 GOLD_DIR = os.path.join(DA_CODE_DIR, "gold")
 CONFIG_FILE = os.path.join(DA_CODE_DIR, "configs/task/all.jsonl")
+EVAL_CONFIG_FILE = os.path.join(DA_CODE_DIR, "configs/eval/eval_all.jsonl")
 WORKSPACE_ROOT = os.path.join(PROJECT_ROOT, "agent_workspace")
 LOGS_DIR = os.path.join(PROJECT_ROOT, "logs")
 DATASET_TASKS_FILE = os.path.join(os.path.dirname(__file__), "dataset_tasks.json")
@@ -70,6 +71,89 @@ def load_task_strategy(task_type: str, task_id: str) -> str:
         return ''
     with open(path, 'r', encoding='utf-8') as f:
         return f.read()
+
+
+def load_eval_config(task_id: str) -> dict:
+    """从 eval_all.jsonl 加载任务的评估配置"""
+    if not os.path.exists(EVAL_CONFIG_FILE):
+        return {}
+    with open(EVAL_CONFIG_FILE, 'r', encoding='utf-8') as f:
+        for line in f:
+            entry = json.loads(line)
+            if entry['id'] == task_id:
+                return entry
+    return {}
+
+
+def format_eval_hint(eval_config: dict, task_workspace: str = None) -> str:
+    """将 eval 配置转换为 agent 可读的输出规范"""
+    if not eval_config:
+        return ""
+
+    lines = ["## 输出规范"]
+
+    # 1. 输出文件名
+    result = eval_config.get('result', [])
+    output_files = []
+    for r in result:
+        files = r.get('file', [])
+        if isinstance(files, str):
+            output_files.append(files)
+        elif isinstance(files, list):
+            for f in files:
+                if not f.startswith('dabench/'):
+                    output_files.append(f)
+    if output_files:
+        lines.append(f"输出文件: {', '.join(output_files)}")
+
+    # 2. 按评估方式补充信息
+    func = eval_config.get('func', [''])[0]
+    config = eval_config.get('config', {})
+    options = eval_config.get('options', [{}])
+    opt = options[0] if options else {}
+
+    if func in ('compare_ml', 'compare_competition_ml'):
+        metric = config.get('metric', '')
+        if metric:
+            lines.append(f"评估指标: {metric}")
+        target_col = opt.get('target_column', '')
+        if target_col:
+            lines.append(f"目标列: {target_col}")
+
+    elif func == 'compare_image':
+        keys = opt.get('keys', [])
+        if keys:
+            lines.append(f"评分字段: {', '.join(keys)}")
+            lines.append("（只有这些字段会被评分，务必确保每个都正确设置）")
+
+    elif func == 'compare_text':
+        # text 任务评估器固定读取 result.json（hardcoded in evaluator）
+        if not output_files:
+            lines.append("输出文件: result.json")
+        for r in result:
+            numbers = r.get('number', [])
+            if numbers:
+                all_keys = []
+                for num_dict in numbers:
+                    all_keys.extend(num_dict.keys())
+                if all_keys:
+                    lines.append(f"输出 JSON key: {all_keys}")
+                    lines.append("（key 名必须与上述完全一致，大小写敏感）")
+
+    elif func == 'compare_csv' and task_workspace:
+        # 注入 sample 文件行数，帮助 agent 推断输出规模（参数化推断能力）
+        import pandas as pd
+        for possible_sample in ['sample_result.csv', 'sample.csv']:
+            sample_path = os.path.join(task_workspace, possible_sample)
+            if os.path.exists(sample_path):
+                try:
+                    s = pd.read_csv(sample_path)
+                    lines.append(f"sample 文件: {possible_sample}（{len(s)} 行，可作为输出行数参考）")
+                except Exception:
+                    pass
+                break
+
+    return "\n".join(lines) if len(lines) > 1 else ""
 
 
 AGENT_CONFIGS = {
@@ -201,44 +285,20 @@ def prepare_workspace(task_id: str, agent_name: str) -> str:
 
 
 def build_prompt(task_config: dict, task_workspace: str) -> str:
-    """构建 Agent 提示词"""
+    """构建 Agent 提示词 — 工作目录、文件列表、输出规范、策略、任务指令"""
     task_id = task_config['id']
     instruction = task_config['instruction']
     task_type = task_config['type']
-
-    # 读取 README 获取数据描述
-    readme_path = os.path.join(task_workspace, "README.md")
-    readme_content = ""
-    if os.path.exists(readme_path):
-        with open(readme_path, 'r') as f:
-            readme_content = f.read()
 
     # 列出工作目录中的文件
     files = os.listdir(task_workspace)
     files_str = "\n".join([f"- {f}" for f in files])
 
-    # 检测 sample 文件并生成格式提示
-    sample_files = [f for f in files if f.startswith('sample_')]
-    config_files = [f for f in files if f.endswith(('.yaml', '.yml'))]
-
-    format_hint = ""
-    if sample_files:
-        format_hint += f"""
-## ⚠️ 输出格式要求 (重要!)
-工作目录中存在样本文件: {', '.join(sample_files)}
-你的输出必须**完全匹配**样本文件的格式:
-- 相同的列名和列顺序
-- 相同的数值精度(小数位数)
-- 只包含样本中出现的列，不要添加额外列
-- 先读取样本文件了解格式，再生成结果
-"""
-
-    if config_files:
-        format_hint += f"""
-## 配置文件
-工作目录中存在配置文件: {', '.join(config_files)}
-对于可视化任务，必须读取配置文件获取: figsize、颜色、字体等参数
-"""
+    # 从 eval 配置注入输出规范
+    eval_config = load_eval_config(task_id)
+    eval_hint = format_eval_hint(eval_config, task_workspace)
+    if eval_hint:
+        eval_hint = f"\n{eval_hint}\n"
 
     # 加载任务类型策略（从 .md 文件）
     type_specific_hint = load_task_strategy(task_type, task_id)
@@ -248,33 +308,21 @@ def build_prompt(task_config: dict, task_workspace: str) -> str:
     prompt = f"""## 任务: {task_id}
 类型: {task_type}
 
-## 数据文件
-工作目录: {task_workspace}
+## 工作目录
+{task_workspace}
+
 文件列表:
 {files_str}
-{format_hint}{type_specific_hint}
-## 数据说明
-{readme_content[:2000] if readme_content else "请先阅读 README.md 了解数据"}
-
+{eval_hint}{type_specific_hint}
 ## 任务要求
 {instruction}
-
-## 执行要求
-1. 首先读取 README.md 和所有数据文件，理解任务
-2. 如果存在 sample_*.* 文件，必须先读取了解输出格式要求
-3. 如果存在 .yaml/.yml 配置文件，必须读取获取参数
-4. 编写 Python 代码完成任务
-5. **关键**: 输出的列名必须与 README/sample 中的写法**完全一致**，不要简化或修改列名!
-   - 错误示例: 把 "Biogas Generation Estimate (cu-ft/day)" 改成 "biogas_generation_estimate"
-   - 正确做法: 直接复制原始列名，包括空格、括号、大小写
-6. 按照以上的任务要求, 结果生成文件，请保存到当前工作目录, 一般保存为result.(csv|json|txt)文件
 
 请开始执行任务。
 """
     return prompt
 
 
-def run_test(task_id: str, agent_name: str, max_turns: int) -> dict:
+def run_test(task_id: str, agent_name: str, max_turns: int, plan_mode: str = "auto") -> dict:
     """运行单个测试"""
     print(f"\n{'='*60}")
     print(f"测试任务: {task_id}")
@@ -297,7 +345,7 @@ def run_test(task_id: str, agent_name: str, max_turns: int) -> dict:
 
     # 创建 Agent 并运行
     agent_cls = get_agent_config(agent_name)["cls"]
-    agent = agent_cls()
+    agent = agent_cls(plan_mode=plan_mode) if agent_name == "dynamic" else agent_cls()
     # 临时修改工作目录
     original_workspace = getattr(agent, "workspace", None)
     if hasattr(agent, "workspace"):
@@ -371,6 +419,13 @@ def main():
         type=int,
         default=1,
         help='并行 worker 数量（默认: 1 串行；建议 3-5）'
+    )
+    parser.add_argument(
+        '--plan-mode',
+        type=str,
+        default='auto',
+        choices=['auto', 'interactive', 'disabled'],
+        help='Plan mode: auto (自动批准) | interactive (人工审批) | disabled (跳过规划)'
     )
     args = parser.parse_args()
 
@@ -472,7 +527,7 @@ def main():
 
     def run_and_save(task_id):
         nonlocal completed_count
-        result = run_test(task_id, agent_name=args.agent, max_turns=max_turns)
+        result = run_test(task_id, agent_name=args.agent, max_turns=max_turns, plan_mode=args.plan_mode)
         with log_lock:
             completed_count += 1
             new_results.append(result)

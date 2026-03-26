@@ -17,25 +17,85 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 
+# ── Anthropic response adapters ────────────────────────────────────────────────
+# Wrap Anthropic SDK responses so _process_response() sees the same interface
+# as OpenAI responses (choices[0].message.content / .tool_calls).
+
+class _AnthropicFunction:
+    def __init__(self, block):
+        self.name = block.name
+        self.arguments = json.dumps(block.input, ensure_ascii=False)
+
+
+class _AnthropicToolCall:
+    def __init__(self, block):
+        self.id = block.id
+        self.function = _AnthropicFunction(block)
+
+
+class _AnthropicMessage:
+    def __init__(self, response):
+        self.tool_calls = []
+        texts = []
+        for block in response.content:
+            if block.type == "tool_use":
+                self.tool_calls.append(_AnthropicToolCall(block))
+            elif block.type == "text":
+                texts.append(block.text)
+        self.content = "\n".join(texts) if texts else ""
+        self.reasoning_content = None
+        if not self.tool_calls:
+            self.tool_calls = None
+
+
+class _AnthropicChoice:
+    def __init__(self, response):
+        self.message = _AnthropicMessage(response)
+
+
+class _AnthropicResponse:
+    def __init__(self, response):
+        self.choices = [_AnthropicChoice(response)]
+
+
 class KimiAgent:
     """Kimi Agent - Plan → Execute 两阶段工作流"""
 
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: str = None, plan_mode: str = "auto"):
         """初始化 Agent
 
         Args:
             api_key: Kimi API密钥
+            plan_mode: 规划模式 - "auto" | "interactive" | "disabled"
         """
         load_dotenv()
 
         # 根据 LLM_PROVIDER 动态选择 API 客户端
-        provider = os.getenv("LLM_PROVIDER", "kimi").lower()
-        if provider == "gemini":
+        self.provider = os.getenv("LLM_PROVIDER", "kimi").lower()
+        if self.provider == "gemini":
             self.client = OpenAI(
                 api_key=api_key or os.getenv("GEMINI_API_KEY"),
                 base_url=os.getenv("GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta/openai/")
             )
             self.model = os.getenv("LLM_MODEL", "gemini-2.0-flash")
+        elif self.provider == "minimax":
+            try:
+                import anthropic
+                self.client = anthropic.Anthropic(
+                    api_key=api_key or os.getenv("MINIMAX_API_KEY"),
+                    base_url=os.getenv("MINIMAX_API_BASE", "https://api.minimax.io/anthropic")
+                )
+            except ImportError:
+                raise ImportError("pip install anthropic")
+            self.model = os.getenv("LLM_MODEL", "MiniMax-M1")
+        elif self.provider == "claude":
+            # Anthropic SDK (非 OpenAI 兼容)
+            try:
+                import anthropic
+                self.client = anthropic.Anthropic(api_key=api_key or os.getenv("ANTHROPIC_API_KEY"))
+            except ImportError:
+                raise ImportError("pip install anthropic")
+            self.model = os.getenv("LLM_MODEL", "claude-sonnet-4-6")
         else:  # kimi (默认)
             self.client = OpenAI(
                 api_key=api_key or os.getenv("MOONSHOT_API_KEY"),
@@ -43,7 +103,7 @@ class KimiAgent:
             )
             self.model = os.getenv("LLM_MODEL", "kimi-k2.5")
 
-        print(f"使用 {provider} API, 模型: {self.model}")
+        print(f"使用 {self.provider} API, 模型: {self.model}")
 
         # 消息历史
         self.messages: List[Dict] = []
@@ -64,6 +124,11 @@ class KimiAgent:
         # 并发工具调用锁（保护 TodoUpdate add 操作的 task_id 生成）
         self._todo_lock = threading.Lock()
 
+        # Plan mode
+        self._plan_mode: str = plan_mode
+        self._phase: str = "execute" if plan_mode == "disabled" else "plan"
+        self._plan: Dict[str, Any] = {}
+
 
     # ============================================
     # 动态上下文构建机制
@@ -71,86 +136,117 @@ class KimiAgent:
 
     def _build_dynamic_messages(self) -> List[Dict]:
         """
-        构建完整消息数组(OpenAI格式),动态注入系统上下文
+        构建完整消息数组(OpenAI格式),静态/动态分离以支持前缀缓存
 
         结构:
-        1. System workflow prompt (持久化,指导思考)
-        2. System reminder start (动态环境信息)
-        3. Conversation history (历史消息)
-        4. System reminder end (Todo短期记忆)
+        [system] base.md (静态,可缓存)
+        [user/assistant/tool...] 对话历史
+        最后一条 user 消息末尾追加: <system_context> + <todo_memory> + <phase_reminder>
         """
         full_messages = []
 
-        # 1. 系统工作流提示(总是第一个)
-        full_messages.append({
-            "role": "system",
-            "content": self._get_system_workflow_prompt()
-        })
+        # 1. system 只放静态内容（支持 Anthropic prompt caching）
+        static_prompt = self._get_system_workflow_prompt()
+        self._system_blocks = [
+            {"type": "text", "text": static_prompt, "cache_control": {"type": "ephemeral"}}
+        ]
+        full_messages.append({"role": "system", "content": static_prompt})
 
-        # 2. 系统提醒开始(环境信息)
-        reminder_start = self._generate_system_reminder_start()
-        if reminder_start:
-            full_messages.append({
-                "role": "system",
-                "content": reminder_start
-            })
-
-        # 3. 对话历史
+        # 2. 对话历史
         full_messages.extend(self.messages)
 
-        # 4. 系统提醒结束(Todo状态)
+        # 3. 动态内容拼接到最后一条 user 消息末尾（不破坏前缀缓存）
+        dynamic_parts = []
+        reminder_start = self._generate_system_reminder_start()
+        if reminder_start:
+            dynamic_parts.append(reminder_start)
         reminder_end = self._generate_system_reminder_end()
         if reminder_end:
-            full_messages.append({
-                "role": "system",
-                "content": reminder_end
-            })
+            dynamic_parts.append(reminder_end)
+        phase_reminder = self._generate_phase_reminder()
+        if phase_reminder:
+            dynamic_parts.append(phase_reminder)
+
+        if dynamic_parts:
+            dynamic_text = "\n\n".join(dynamic_parts)
+            for i in range(len(full_messages) - 1, -1, -1):
+                if full_messages[i]["role"] == "user":
+                    full_messages[i] = dict(full_messages[i])  # 不修改原始 messages
+                    full_messages[i]["content"] += "\n\n" + dynamic_text
+                    break
 
         return full_messages
 
     def _get_system_workflow_prompt(self) -> str:
-        """系统工作流提示 - 从 base.md 加载"""
+        """系统工作流提示 - 根据 plan_mode 加载不同 base"""
+        filename = 'base_noplan.md' if self._plan_mode == 'disabled' else 'base.md'
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            '.claude', 'skills', 'da-code-solver', 'reference', 'base.md')
+                            '.claude', 'skills', 'da-code-solver', 'reference', filename)
         with open(path, 'r', encoding='utf-8') as f:
             return f.read()
 
     def _generate_system_reminder_start(self) -> str:
         """生成动态环境上下文"""
-        return f"""<system_context>
+        return f"""<system-reminder>
 当前环境:
 - 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 - 工作空间: {os.path.abspath(self.workspace)}
 - 回合: {self._current_turn}
-</system_context>"""
+</system-reminder>"""
+
+    def _generate_phase_reminder(self) -> str:
+        """生成阶段提醒"""
+        if self._plan_mode == "disabled":
+            return ""
+        if self._phase == "plan":
+            return """<system-reminder>
+规划模式已激活。你当前处于规划阶段——你只能读取和分析文件，不得写入文件、执行命令或做出任何更改。此约束优先于你收到的其他所有指令。
+
+请先读取所有相关文件，分析数据结构和任务需求，然后调用 SubmitPlan 提交结构化执行计划。
+</system-reminder>"""
+        else:
+            return """<system-reminder>
+执行模式已激活。计划已批准，请按照已批准计划执行任务。
+</system-reminder>"""
 
     def _generate_system_reminder_end(self) -> str:
-        """生成Todo短期记忆"""
-        if not self.todos["tasks"]:
+        """生成Todo短期记忆 + 已批准计划"""
+        if not self.todos["tasks"] and not self._plan:
             return ""
 
-        todo_lines = []
+        lines = ["<system-reminder>"]
 
         # 格式化Todo列表
         if self.todos["tasks"]:
-            todo_lines.extend(["<todo_memory>", "当前任务:"])
+            lines.append("当前任务:")
             for task in self.todos["tasks"]:
                 status_icon = {
                     "pending": "[ ]",
                     "in_progress": "[→]",
                     "completed": "[✓]"
                 }[task["status"]]
-                # Show task with result if available
                 task_line = f"{status_icon} {task['id']}: {task['description']}"
                 if task.get("result"):
                     task_line += f" → {task['result']}"
-                todo_lines.append(task_line)
+                lines.append(task_line)
 
-            todo_lines.append("\n提醒: 使用 TodoUpdate 工具更新任务状态!")
-            todo_lines.append("完成任务时，建议提供 result 参数说明执行结果!")
-            todo_lines.append("</todo_memory>")
+            lines.append("")
+            lines.append("提醒: 使用 TodoUpdate 工具更新任务状态!")
+            lines.append("完成任务时，建议提供 result 参数说明执行结果!")
 
-        return "\n".join(todo_lines)
+        # 注入已批准的计划
+        if self._plan and self._phase == "execute":
+            lines.append("")
+            lines.append("已批准计划:")
+            spec = self._plan.get("output_spec", {})
+            lines.append(f"输出: {spec.get('filename', '')} ({spec.get('format', '')})")
+            if spec.get("columns"):
+                lines.append(f"列: {spec['columns']}")
+            if spec.get("notes"):
+                lines.append(f"备注: {spec['notes']}")
+
+        lines.append("</system-reminder>")
+        return "\n".join(lines)
 
     def run(self, user_input: str, max_turns: int = 40) -> str:
         """
@@ -188,6 +284,14 @@ class KimiAgent:
             should_stop = self._process_response(response)
 
             if should_stop:
+                # 规划阶段未调用 SubmitPlan 就想停止，强制要求提交计划
+                if self._phase == "plan" and self._plan_mode != "disabled":
+                    print("\n⚠️ 规划阶段未调用 SubmitPlan，强制要求提交...")
+                    self.messages.append({
+                        "role": "user",
+                        "content": "你还在规划阶段，必须调用 SubmitPlan 工具提交结构化计划，才能进入执行阶段。请立即调用 SubmitPlan。"
+                    })
+                    continue
                 print("\n✓ 任务完成!")
                 break
 
@@ -197,7 +301,9 @@ class KimiAgent:
         return self._get_final_output()
 
     def _call_kimi(self) -> Any:
-        """调用 Kimi API (使用动态上下文)"""
+        """调用 LLM API (使用动态上下文)"""
+        if self.provider in ["claude", "minimax"]:
+            return self._call_anthropic()
         try:
             # 构建动态消息上下文并保存
             full_messages = self._build_dynamic_messages()
@@ -208,11 +314,100 @@ class KimiAgent:
 
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=full_messages,  # 使用动态消息而非静态历史
+                messages=full_messages,
                 tools=self._get_tools(),
                 temperature=temp
             )
             return response
+        except Exception as e:
+            print(f"❌ API 调用失败: {e}")
+            return None
+
+    def _messages_to_anthropic(self, messages: List[Dict]) -> List[Dict]:
+        """将 OpenAI 格式的消息历史转换为 Anthropic 格式"""
+        result = []
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
+            role = msg.get("role")
+
+            if role == "user":
+                result.append({"role": "user", "content": msg["content"]})
+            elif role == "assistant":
+                content_blocks = []
+                if msg.get("content"):
+                    content_blocks.append({"type": "text", "text": msg["content"]})
+                if msg.get("tool_calls"):
+                    for tc in msg["tool_calls"]:
+                        fn = tc.function if hasattr(tc, 'function') else tc.get('function', {})
+                        name = fn.name if hasattr(fn, 'name') else fn.get('name', '')
+                        args_str = fn.arguments if hasattr(fn, 'arguments') else fn.get('arguments', '{}')
+                        tc_id = tc.id if hasattr(tc, 'id') else tc.get('id', '')
+                        content_blocks.append({
+                            "type": "tool_use",
+                            "id": tc_id,
+                            "name": name,
+                            "input": json.loads(args_str) if isinstance(args_str, str) else args_str
+                        })
+                if content_blocks:
+                    result.append({"role": "assistant", "content": content_blocks})
+            elif role == "tool":
+                # Anthropic: tool results must be in a user message
+                tool_results = [{"type": "tool_result", "tool_use_id": msg["tool_call_id"], "content": msg["content"]}]
+                # 合并连续的 tool messages
+                while i + 1 < len(messages) and messages[i + 1].get("role") == "tool":
+                    i += 1
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": messages[i]["tool_call_id"],
+                        "content": messages[i]["content"]
+                    })
+                result.append({"role": "user", "content": tool_results})
+            # system messages are handled separately
+            i += 1
+        return result
+
+    def _call_anthropic(self) -> Any:
+        """调用 Anthropic API (Claude / MiniMax-Anthropic)"""
+        try:
+            full_messages = self._build_dynamic_messages()
+            self.full_messages_history = full_messages
+
+            # 分离 system 和非 system 消息
+            non_system = [m for m in full_messages if m["role"] != "system"]
+            anthropic_messages = self._messages_to_anthropic(non_system)
+
+            # 在倒数第二条 user 消息上设 cache_control，缓存对话历史前缀
+            user_indices = [i for i, m in enumerate(anthropic_messages) if m["role"] == "user"]
+            if len(user_indices) >= 2:
+                idx = user_indices[-2]
+                msg = anthropic_messages[idx]
+                content = msg["content"]
+                if isinstance(content, str):
+                    msg["content"] = [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
+                elif isinstance(content, list) and content:
+                    content[-1] = dict(content[-1])
+                    content[-1]["cache_control"] = {"type": "ephemeral"}
+
+            # 转换工具格式: OpenAI → Anthropic
+            tools = []
+            for t in self._get_tools():
+                fn = t["function"]
+                tools.append({
+                    "name": fn["name"],
+                    "description": fn["description"],
+                    "input_schema": fn["parameters"]
+                })
+
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=16000,
+                system=self._system_blocks,  # list of blocks, 支持 cache_control
+                messages=anthropic_messages,
+                tools=tools,
+                temperature=1.0
+            )
+            return _AnthropicResponse(response)
         except Exception as e:
             print(f"❌ API 调用失败: {e}")
             return None
@@ -279,26 +474,95 @@ class KimiAgent:
         return False
 
     def _get_tools(self) -> List[Dict]:
-        """定义可用工具"""
-        return [
-            {
+        """定义可用工具 - 按阶段返回不同工具集"""
+        read_file_tool = {
+            "type": "function",
+            "function": {
+                "name": "ReadFile",
+                "description": "读取文件内容。CSV文件自动显示前10行+总行数。其他文件最多返回前20000个字符，如果文件过大会被截断，建议使用Python脚本分批处理",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "文件路径"}
+                    },
+                    "required": ["path"]
+                }
+            }
+        }
+        todo_update_tool = {
+            "type": "function",
+            "function": {
+                "name": "TodoUpdate",
+                "description": "管理任务列表(短期记忆)。用于追踪复杂任务的执行进度。对于3步以上的复杂任务,使用此工具创建和更新待办事项。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["add", "update_status", "complete"],
+                            "description": "操作类型: add=添加新任务, update_status=更新状态, complete=完成任务"
+                        },
+                        "task_id": {"type": "string", "description": "任务ID (更新/完成操作时必需)"},
+                        "description": {"type": "string", "description": "任务描述 (添加操作时必需)"},
+                        "status": {
+                            "type": "string",
+                            "enum": ["pending", "in_progress", "completed"],
+                            "description": "任务状态"
+                        },
+                        "result": {
+                            "type": "string",
+                            "description": "任务执行结果 (完成任务时建议提供)。简要说明执行的关键结果，帮助后续决策。"
+                        }
+                    },
+                    "required": ["action"]
+                }
+            }
+        }
+        base_tools = [read_file_tool, todo_update_tool]
+
+        if self._phase == "plan":
+            # 规划阶段：只读 + SubmitPlan
+            submit_plan_tool = {
                 "type": "function",
                 "function": {
-                    "name": "ReadFile",
-                    "description": "读取文件内容。CSV文件自动显示前10行+总行数。其他文件最多返回前20000个字符，如果文件过大会被截断，建议使用Python脚本分批处理",
+                    "name": "SubmitPlan",
+                    "description": "提交执行计划以获得批准。规划阶段读取分析完所有文件后调用此工具。",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "文件路径"
+                            "analysis": {"type": "string", "description": "对任务的分析（数据特征、关键需求、潜在难点）"},
+                            "subtasks": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {"type": "string"},
+                                        "description": {"type": "string"},
+                                        "depends_on": {"type": "array", "items": {"type": "string"}}
+                                    },
+                                    "required": ["id", "description"]
+                                },
+                                "description": "子任务列表（含依赖关系）"
+                            },
+                            "output_spec": {
+                                "type": "object",
+                                "properties": {
+                                    "filename": {"type": "string"},
+                                    "format": {"type": "string"},
+                                    "columns": {"type": "array", "items": {"type": "string"}},
+                                    "notes": {"type": "string"}
+                                },
+                                "required": ["filename", "format"],
+                                "description": "核心产物的格式规格"
                             }
                         },
-                        "required": ["path"]
+                        "required": ["analysis", "subtasks", "output_spec"]
                     }
                 }
-            },
-            {
+            }
+            return base_tools + [submit_plan_tool]
+        else:  # execute
+            write_file_tool = {
                 "type": "function",
                 "function": {
                     "name": "WriteFile",
@@ -306,20 +570,14 @@ class KimiAgent:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "文件路径"
-                            },
-                            "content": {
-                                "type": "string",
-                                "description": "文件内容"
-                            }
+                            "path": {"type": "string", "description": "文件路径"},
+                            "content": {"type": "string", "description": "文件内容"}
                         },
                         "required": ["path", "content"]
                     }
                 }
-            },
-            {
+            }
+            run_command_tool = {
                 "type": "function",
                 "function": {
                     "name": "RunCommand",
@@ -327,51 +585,13 @@ class KimiAgent:
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "command": {
-                                "type": "string",
-                                "description": "要执行的命令，例如 'ls -la' 或 'python script.py'"
-                            }
+                            "command": {"type": "string", "description": "要执行的命令，例如 'ls -la' 或 'python script.py'"}
                         },
                         "required": ["command"]
                     }
                 }
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "TodoUpdate",
-                    "description": "管理任务列表(短期记忆)。用于追踪复杂任务的执行进度。对于3步以上的复杂任务,使用此工具创建和更新待办事项。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["add", "update_status", "complete"],
-                                "description": "操作类型: add=添加新任务, update_status=更新状态, complete=完成任务"
-                            },
-                            "task_id": {
-                                "type": "string",
-                                "description": "任务ID (更新/完成操作时必需)"
-                            },
-                            "description": {
-                                "type": "string",
-                                "description": "任务描述 (添加操作时必需)"
-                            },
-                            "status": {
-                                "type": "string",
-                                "enum": ["pending", "in_progress", "completed"],
-                                "description": "任务状态"
-                            },
-                            "result": {
-                                "type": "string",
-                                "description": "任务执行结果 (完成任务时建议提供)。简要说明执行的关键结果，帮助后续决策。例如：'成功读取150行数据'、'脚本执行成功，生成图表trend.png'、'发现5个异常值'"
-                            }
-                        },
-                        "required": ["action"]
-                    }
-                }
             }
-        ]
+            return base_tools + [write_file_tool, run_command_tool]
 
     def _execute_tool(self, tool_name: str, tool_args: Dict) -> str:
         """执行工具"""
@@ -384,6 +604,8 @@ class KimiAgent:
                 return self._tool_run_command(tool_args["command"])
             elif tool_name == "TodoUpdate":
                 return self._tool_todo_update(tool_args)
+            elif tool_name == "SubmitPlan":
+                return self._tool_submit_plan(tool_args)
             else:
                 return f"错误: 未知工具 {tool_name}"
         except Exception as e:
@@ -541,6 +763,55 @@ class KimiAgent:
 
         return "❌ 未知操作"
 
+    def _tool_submit_plan(self, params: Dict) -> str:
+        """处理 SubmitPlan 调用：存储计划，自动填充 todo，切换阶段"""
+        self._plan = params
+
+        # 从 subtasks 自动填充 TodoUpdate
+        for subtask in params.get("subtasks", []):
+            with self._todo_lock:
+                self.todos["tasks"].append({
+                    "id": subtask["id"],
+                    "description": subtask["description"],
+                    "status": "pending",
+                    "created_at": datetime.now().isoformat()
+                })
+
+        if self._plan_mode == "auto":
+            self._phase = "execute"
+            return "✅ 计划已批准，进入执行阶段。请按计划开始执行任务。"
+
+        # interactive 模式：CLI 交互审批
+        approved, feedback = self._request_plan_approval()
+        if approved:
+            self._phase = "execute"
+            return "✅ 计划已批准，进入执行阶段。请按计划开始执行任务。"
+        else:
+            # 清空 todo，等待重新提交
+            self.todos["tasks"] = []
+            return f"❌ 计划被拒绝: {feedback}\n请修改后重新调用 SubmitPlan。"
+
+    def _request_plan_approval(self) -> tuple:
+        """CLI 交互式计划审批"""
+        print("\n" + "=" * 60)
+        print("📋 执行计划待审批")
+        print("=" * 60)
+        print(f"\n分析:\n{self._plan.get('analysis', '')}")
+        print(f"\n子任务:")
+        for st in self._plan.get("subtasks", []):
+            deps = f" → 依赖: {st['depends_on']}" if st.get("depends_on") else ""
+            print(f"  [{st['id']}] {st['description']}{deps}")
+        spec = self._plan.get("output_spec", {})
+        print(f"\n输出: {spec.get('filename', '?')} ({spec.get('format', '?')})")
+        if spec.get("columns"):
+            print(f"  列: {spec['columns']}")
+        print("=" * 60)
+
+        answer = input("\n批准? (y=批准 / 其他=反馈修改意见): ").strip()
+        if answer.lower() in ("y", "yes", ""):
+            return True, "approved"
+        return False, answer
+
     def _get_final_output(self) -> str:
         """获取最终输出"""
         for msg in reversed(self.messages):
@@ -607,6 +878,8 @@ class KimiAgent:
             log_data = {
                 "messages": self.messages,
                 "todos": self.todos,
+                "plan": self._plan,
+                "plan_mode": self._plan_mode,
                 "timestamp": timestamp,
                 "turns": len(self.messages),
                 "full_context": self.full_messages_history
