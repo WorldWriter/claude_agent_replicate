@@ -1,2 +1,5 @@
 # Keep leaked snapshot out of git history
 src/
+
+# Local research notes / archives
+README_old.md
